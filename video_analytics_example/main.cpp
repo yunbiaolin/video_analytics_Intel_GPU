@@ -1,5 +1,5 @@
 /*
-// Copyright (c) 2017 Intel Corporation
+// Copyright (c) 2018 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@
 */
 
 #include "main.h"
-#include "my_ie.h"
 #include <chrono>
 #include <thread>
 #include <stdio.h>
@@ -28,7 +27,14 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <semaphore.h>
+#include <vector>
+#include <queue>
 
+#include <pthread.h>  
+#include <unistd.h>  
+#include <semaphore.h>
+#include <chrono>
+#include "common.hpp"
 // =================================================================
 // Intel Media SDK
 // =================================================================
@@ -36,23 +42,25 @@
 #include <mfxstructures.h>
 #include <unistd.h>
 #include "common_utils.h"
-#include "box.h"
-
-#include "bufferqueue.h"
+#include "dpipe.h"
 
 // =================================================================
 // Inference Engine Interface
 // =================================================================
 
-#include "my_ie.h"
+#include "XCBShow.hpp"
+#include "detector.hpp"
 
 using namespace cv;
+using namespace std;
 
-#define DUMP_VPP_OUTPUT  0   // Enabe VPP output dump for validation purpose
-#define VERIFY_PURPOSE   0   // Verify the inference result
-#define INFERENCE_ENABLE 1
+
 #define NUM_OF_CHANNELS 48   // Maximum supported decoding and video processing 
 
+// Inference Device 
+#define NUM_OF_GPU_INFER       1// two GPU context
+//#define ENABLE_WORKLOAD_BALANCE 
+#define NUM_OF_CPU_BATCH       2
 
 // Helper macro definitions
 #define MSDK_PRINT_RET_MSG(ERR)         {PrintErrString(ERR, __FILE__, __LINE__);}
@@ -74,36 +82,192 @@ using namespace cv;
 #define MFX_FOURCC_RGBP  MFX_MAKEFOURCC('R','G','B','P')
 #endif
 
-chrono::high_resolution_clock::time_point tmStart, tmEnd;
-chrono::high_resolution_clock::time_point time1,time2;
 
-double pre_stagesum=0;
-std::chrono::duration<double> diff;
+Detector gDetector[NUM_OF_GPU_INFER];
+sem_t gNewtaskAvaiable;
+sem_t             gsemtInfer[NUM_OF_GPU_INFER];
+queue<infer_task_t> gtaskque[NUM_OF_GPU_INFER];
+pthread_mutex_t   mutexinfer[NUM_OF_GPU_INFER]; 
 
-vector<double> pre_stage_times;
-vector<double> infer_times;
-vector<double> post_stage_times;
+// Display
+#define INPUTNUM 6
+pthread_mutex_t mutexshow ;    // Mutex of the dislay queue
+sem_t           g_semtshow;    // Notify the display thread to show                     
+queue<vector<Detector::DetctorResult> > gresultque; // Queue of the inference output
+queue<vector<Detector::DetctorResult> > gresultque1; // Queue of the inference output
 
-int nBatch=0;
-
-
-CMyIE *g_pIE[NUM_OF_CHANNELS];
-Mat* g_resized[NUM_OF_CHANNELS];
-size_t g_batchSize;
-std::string g_labels[NUMLABELS];
-
-int gNet_input_width[NUM_OF_CHANNELS];
-int gNet_input_height[NUM_OF_CHANNELS];
+int grunning = true;
+//Infernece information
+size_t   g_batchSize;
+int gNet_input_width;
+int gNet_input_height;
+int total_frame[3] ={0};
+int each_frame[INPUTNUM];
+static string  CLASSES[] = {"background",
+           "face", "bicycle", "bird", "boat",
+           "!bottle", "!bus", "car", "cat", "chair",
+           "cow", "diningtable", "dog", "horse",
+           "motorbike", "person", "!pottedplant",
+           "sheep", "sofa", "!train", "!tvmonitor"};
+// Performance information
+int total_fps;
 
 void App_ShowUsage(void);
-
-bool IE_Execute(int nchannleID, mfxU16 w_ie, mfxU16 h_ie, float normalizefactor, unsigned char *pIE_InputFrame, int *batchindex);
-bool IE_Execute_LowLatency(size_t *m);
-void IE_DrawBoundingBox(int nchannleID );
-void IE_SaveOutput(int nchannleID, bool bSingleImageMode, VideoWriter *vw);
 mfxStatus WriteRawFrameToMemory(mfxFrameSurface1* pSurface, int dest_w, int dest_h, unsigned char* dest, mfxU32 fourCC);
-bool PrepareData(mfxFrameSurface1* pSurface, mfxU32 fourCC, mfxU16 w_ie, mfxU16 h_ie, float normalizefactor, size_t *m, int *batchindex);
+cv::Mat createMat(unsigned char *rawData, unsigned int dimX, unsigned int dimY);
 
+
+// ================= Display Thread =======
+// in current version, each grids with the same size (wxh)
+struct DisplayThreadConfig
+{
+public:
+    DisplayThreadConfig()
+    {
+    };
+
+    int nCellWidth;  // width of the each display grid
+    int nCellHeight; // Height of each display grid
+    int nRows;       // # of rows in each display grids
+    int nCols;       // # of grids in each row
+
+};
+
+//Thread to collect performance information
+void *thr_fps(void *arg)
+{
+    typedef std::chrono::high_resolution_clock Time;
+    typedef std::chrono::duration<double, std::ratio<1, 1000>> ms;
+    typedef std::chrono::duration<float> fsec;	
+
+    usleep(1000*1000);//1000ms to fullfill buffer
+    memset(total_frame,0, sizeof(unsigned int)*NUM_OF_GPU_INFER);
+
+    auto t0=Time::now(),t1=Time::now();
+    while(grunning){
+        usleep(1000*1000*2);//2s
+        t1 = Time::now();
+        fsec fs = t1 - t0;
+        double timeUsed = std::chrono::duration_cast<ms>(fs).count();
+        total_fps = (total_frame[0] + total_frame[1] + total_frame[2] )*1000/timeUsed;
+
+	std::cout << "RealTime fps=" << total_fps << " Total frame: "<<total_frame[0]<< "\n" << std::endl;
+        memset(total_frame,0, sizeof(unsigned int)*NUM_OF_GPU_INFER);			
+	t0 = Time::now();
+    }
+    std::cout<<"Performance thread is done"<<std::endl;
+    return NULL;
+}
+
+// ================= Dispay Thread =======
+void *DisplayThreadFunc(void *arg)
+{
+    struct DisplayThreadConfig *pDisplayConfig = NULL;
+    int nCellWidth  = 0;
+    int nCellHeight = 0;
+    int nCols   = 0;
+    int nRows   = 0;
+    int prev_fps=0;
+
+    if( NULL == arg ){
+        std::cout<<"Invalid Display configuration"<<std::endl;
+        return NULL;
+    }
+
+    pDisplayConfig= (DisplayThreadConfig *) arg;
+    nCellWidth  = pDisplayConfig->nCellWidth;
+    nCellHeight = pDisplayConfig->nCellHeight;
+    nCols       = pDisplayConfig->nCols;
+    nRows       = pDisplayConfig->nRows;
+    
+    int fpshaswrite[INPUTNUM];
+    cv::Mat onescreen(nCellHeight*nRows, nCellWidth*nCols, CV_8UC3);
+    cv::Mat eachscreen[INPUTNUM];
+    int eachscreen_display_order[INPUTNUM]={0};
+    for(int i=0;i<INPUTNUM;i++){
+        eachscreen[i]=onescreen(cv::Rect(nCellWidth*(i%nCols),(i>nRows)?nCellHeight:0,nCellWidth,nCellHeight));
+    }
+    while(grunning)
+    {
+        sem_wait(&g_semtshow);
+        vector<Detector::DetctorResult> objects;
+        if(!gresultque.empty()){
+            pthread_mutex_lock(&mutexshow); 	
+            objects = gresultque.front();	
+            gresultque.pop();			
+            pthread_mutex_unlock(&mutexshow); 	
+            memset(fpshaswrite,0,sizeof(fpshaswrite));
+			
+            for(int k=0;k<objects.size();k++){
+                for(int i=0;i<objects[k].boxs.size();i++)
+                {
+             
+                    if(CLASSES[(int)(objects[k].boxs[i].classid)][0]=='!')
+                        continue;
+               
+                    cv::rectangle(objects[k].orgimg,cvPoint(objects[k].boxs[i].left,objects[k].boxs[i].top),cvPoint(objects[k].boxs[i].right,objects[k].boxs[i].bottom),cv::Scalar(71, 99, 250),2);
+                    std::stringstream ss;  
+                    ss << CLASSES[(int)(objects[k].boxs[i].classid)] << "/" << objects[k].boxs[i].confidence;  
+                    std::string  text = ss.str();  
+                    cv::putText(objects[k].orgimg, text, cvPoint(objects[k].boxs[i].left,objects[k].boxs[i].top+20), cv::FONT_HERSHEY_PLAIN, 1.0f, cv::Scalar(0, 255, 255));  	
+		}
+                {		
+                    if(fpshaswrite[objects[k].inputid]==0)
+                    {
+                        //if(objects[k].frameno > eachscreen_display_order[objects[k].inputid]){
+                            objects[k].orgimg.copyTo(eachscreen[objects[k].inputid]);
+                            eachscreen_display_order[objects[k].inputid] = objects[k].frameno;                         
+                       // }
+                        fpshaswrite[objects[k].inputid]=1;
+                    } 	
+                }
+            }
+            if(!gresultque1.empty()){
+                Detector::DetctorResult tempObj;
+                pthread_mutex_lock(&mutexshow); 	
+                objects = gresultque1.front();
+                static unsigned int dispNum =0;	
+                if(dispNum%NUM_OF_CPU_BATCH == 1){
+                   gresultque1.pop();
+                }
+                
+                tempObj = objects[dispNum%NUM_OF_CPU_BATCH];		
+                dispNum++;
+                pthread_mutex_unlock(&mutexshow); 
+
+		for(int i=0;i<tempObj.boxs.size();i++)
+		{
+                    if(CLASSES[(int)(tempObj.boxs[i].classid)][0]=='!')
+                        continue;
+                    cv::rectangle(tempObj.orgimg,cvPoint(tempObj.boxs[i].left,tempObj.boxs[i].top),cvPoint(tempObj.boxs[i].right,tempObj.boxs[i].bottom),cv::Scalar(71, 99, 250),2);
+                    std::stringstream ss;  
+                    ss << CLASSES[(int)(tempObj.boxs[i].classid)] << "/" << tempObj.boxs[i].confidence;  
+                    std::string  text = ss.str();  
+		    // cv::putText(tempObj.orgimg, text, cvPoint(tempObj.boxs[i].left,tempObj.boxs[i].top+20), cv::FONT_HERSHEY_PLAIN, 1.0f, cv::Scalar(0, 255, 255));  	
+	       }//for(int i=0;i<objects[k].boxs.size();i++)
+						
+               tempObj.orgimg.copyTo(eachscreen[tempObj.inputid]);
+               // }//for(int k=0;k<objects.size();k++){
+            }// if(!gresultque1.empty()){	
+            // Update Peformance at the last display Grid
+            if(prev_fps != total_fps)
+            {
+                std::stringstream ss;
+                cv::Mat frame(nCellWidth,nCellHeight, CV_8UC3);
+                memset(frame.data, 0, nCellWidth*nCellHeight*3);
+                ss << "Total FPS: " << total_fps <<" (f/s)"; 
+                prev_fps = total_fps;
+                std::string  text = ss.str();  				
+                cv::putText(frame, text, cvPoint(0,20), cv::FONT_HERSHEY_PLAIN, 1.0f, cv::Scalar(127, 255, 0));  
+                frame.copyTo(eachscreen[INPUTNUM-1]);		
+            }
+            XCBShow::Instance().imshow(0,onescreen);
+	
+        } // wait for display		
+    }//while(grunnig)
+    std::cout<<"Dispaly Thread is done"<<std::endl;
+    return NULL;
+}
 
 struct DecThreadConfig
 {
@@ -116,13 +280,12 @@ public:
     MFXVideoDECODE *pmfxDEC;
     mfxU16 nDecSurfNum;
     mfxU16 nVPP_In_SurfNum;
+    mfxU16 nVPP_Out_SurfNum;
     mfxBitstream *pmfxBS;
     mfxFrameSurface1** pmfxDecSurfaces;
     mfxFrameSurface1** pmfxVPP_In_Surfaces;
     mfxFrameSurface1** pmfxVPP_Out_Surfaces;
     MFXVideoSession *  pmfxSession;
-    BufferQueue      * pVideoProcessINQ;
-    BufferQueue      * pVideoProcessOutQ;
     mfxFrameAllocator *pmfxAllocator;
     MFXVideoVPP       *pmfxVPP;
 
@@ -131,11 +294,13 @@ public:
     int nFPS;
     bool bStartCount;
     int nFrameProcessed;
+    dpipe_t *dpipe;
 
     std::chrono::high_resolution_clock::time_point tmStart;
     std::chrono::high_resolution_clock::time_point tmEnd;
 
 };
+
 
 // ================= Decoding Thread =======
 void *DecodeThreadFunc(void *arg)
@@ -153,6 +318,7 @@ void *DecodeThreadFunc(void *arg)
     int nIndexVPP_Out = 0;
     bool bNeedMore    = false;
 
+    unsigned char *temp_img_buffer = (unsigned char *)malloc(gNet_input_width*gNet_input_height*4);
     pDecConfig= (DecThreadConfig *) arg;
     if( NULL == pDecConfig)
     {
@@ -162,10 +328,10 @@ void *DecodeThreadFunc(void *arg)
     std::cout << std::endl <<">channel("<<pDecConfig->nChannel<<") Initialized " << std::endl;
 
     pDecConfig->tmStart = std::chrono::high_resolution_clock::now();
-    while (MFX_ERR_NONE <= sts || MFX_ERR_MORE_DATA == sts || MFX_ERR_MORE_SURFACE == sts)
+    while ((MFX_ERR_NONE <= sts || MFX_ERR_MORE_DATA == sts || MFX_ERR_MORE_SURFACE == sts))
     {
-        //std::cout << std::endl <<">channel("<<pDecConfig->nChannel<<") Dec: nFrame:"<<nFrame<<" totalDecNum:"<<pDecConfig->totalDecNum << std::endl;
-        if (nFrame >= pDecConfig->totalDecNum) { break;};
+       // std::cout << std::endl <<">channel("<<pDecConfig->nChannel<<") Dec: nFrame:"<<nFrame<<" totalDecNum:"<<pDecConfig->totalDecNum << std::endl;
+        if (grunning == false) { break;};
         if (MFX_WRN_DEVICE_BUSY == sts)
         {
             usleep(1000); // Wait if device is busy, then repeat the same call to DecodeFrameAsync
@@ -174,6 +340,10 @@ void *DecodeThreadFunc(void *arg)
         if (MFX_ERR_MORE_DATA == sts)
         {   
             sts = ReadBitStreamData(pDecConfig->pmfxBS, pDecConfig->f_i); // Read more data into input bit stream
+            if(sts != 0){
+              fseek(pDecConfig->f_i,0, SEEK_SET);
+              sts = ReadBitStreamData(pDecConfig->pmfxBS, pDecConfig->f_i);
+            }
             MSDK_BREAK_ON_ERROR(sts);
         }
         if (MFX_ERR_MORE_SURFACE == sts || MFX_ERR_NONE == sts)
@@ -186,25 +356,24 @@ void *DecodeThreadFunc(void *arg)
 
         if(bNeedMore == false)
         {
-                if (MFX_ERR_MORE_SURFACE == sts || MFX_ERR_NONE == sts)
-                {
-                
-                    nIndexVPP_In = GetFreeSurfaceIndex(pDecConfig->pmfxVPP_In_Surfaces, pDecConfig->nVPP_In_SurfNum); // Find free frame surface
-                    if(nIndexVPP_In == MFX_ERR_NOT_FOUND){
-                         std::cout << ">> Not able to find an avaialbe decoding surface" << std::endl;
-                    }
-
-                    if(nIndexVPP_In == MFX_ERR_NOT_FOUND){
-                         std::cout << ">channel("<<pDecConfig->nChannel<<") >> Not able to find an avaialbe VPP input surface" << std::endl;
-                    }
+            if (MFX_ERR_MORE_SURFACE == sts || MFX_ERR_NONE == sts)
+            {   
+recheck:
+                nIndexVPP_In = GetFreeSurfaceIndex(pDecConfig->pmfxVPP_In_Surfaces, pDecConfig->nVPP_In_SurfNum); // Find free frame surface
+         
+                if(nIndexVPP_In == MFX_ERR_NOT_FOUND){
+                   std::cout << ">channel("<<pDecConfig->nChannel<<") >> Not able to find an avaialbe VPP input surface" << std::endl;
+                     
+                   goto recheck;
                 }
+            }
         }
 
         // Decode a frame asychronously (returns immediately)
         //  - If input bitstream contains multiple frames DecodeFrameAsync will start decoding multiple frames, and remove them from bitstream
-            sts = pDecConfig->pmfxDEC->DecodeFrameAsync(pDecConfig->pmfxBS, pDecConfig->pmfxDecSurfaces[nIndexDec], &(pDecConfig->pmfxVPP_In_Surfaces[nIndexVPP_In]), &syncpDec);
+        sts = pDecConfig->pmfxDEC->DecodeFrameAsync(pDecConfig->pmfxBS, pDecConfig->pmfxDecSurfaces[nIndexDec], &(pDecConfig->pmfxVPP_In_Surfaces[nIndexVPP_In]), &syncpDec);
 
-        // Ignore warnings if output is available,eat the D
+        // Ignore warnings if output is available,eat the Decode surface
         // if no output and no action required just repecodeFrameAsync call
         if (MFX_ERR_NONE < sts && syncpDec)
         {
@@ -214,57 +383,53 @@ void *DecodeThreadFunc(void *arg)
         else if(MFX_ERR_MORE_DATA == sts)
         {
             bNeedMore = true;
-            //std::cout << std::endl<< ">channel("<<pDecConfig->nChannel<<") sts: MFX_ERR_MORE_DATA" << std::endl;
         }
         else if(MFX_ERR_MORE_SURFACE == sts)
         {
-        	bNeedMore = true;
-        	//std::cout << std::endl<< ">channel("<<pDecConfig->nChannel<<") sts: MFX_ERR_MORE_SURFACE" << std::endl;
+            bNeedMore = true;
         }
         //else
-        //    std::cout << std::endl<< ">channel("<<pDecConfig->nChannel<<") sts: " << sts << std::endl;
 
-         if (MFX_ERR_NONE == sts )
-         {
-
-            if(pDecConfig->bStartCount == true){
-                pDecConfig->nFrameProcessed ++;
-            }
+        if (MFX_ERR_NONE == sts )
+        {
+            // A new decoding surface is ready
+            //if(pDecConfig->bStartCount == true){
+            pDecConfig->nFrameProcessed ++;
+            //}
 
             nFrame++;
-            if ((nFrame % pDecConfig->nFPS) == 0) 
+            if (1) //(nFrame % pDecConfig->nFPS) == 0) 
             {
-                //std::cout <<std::endl << "Channel("<<pDecConfig->nChannel<<") VPP: Try to get VPP out surface index" << std::endl;
-                int  nIndexVPP_Out =pDecConfig->pVideoProcessOutQ->dequeueBuffer(1);
+recheck2:
+               nIndexVPP_Out = GetFreeSurfaceIndex(pDecConfig->pmfxVPP_Out_Surfaces, pDecConfig->nVPP_Out_SurfNum); // Find free frame surface
 
-                //std::cout <<std::endl << "Channel("<<pDecConfig->nChannel<<") VPP In: " << nIndexVPP_In << ">> VPP out: " << nIndexVPP_Out << std::endl;
+               if(nIndexVPP_Out == MFX_ERR_NOT_FOUND){
+                   std::cout << ">channel("<<pDecConfig->nChannel<<") >> Not able to find an avaialbe VPP output surface" << std::endl;
+                 //  return NULL;
+                   goto recheck2;
+               }
+                              
+               for (;;)
+               {
+                   // Process a frame asychronously (returns immediately) 
+                   sts = pDecConfig->pmfxVPP->RunFrameVPPAsync(pDecConfig->pmfxVPP_In_Surfaces[nIndexVPP_In], pDecConfig->pmfxVPP_Out_Surfaces[nIndexVPP_Out], NULL, &syncpVPP);
 
-                for (;;)
-                {
-                     //std::cout << std::endl << "Channel("<<pDecConfig->nChannel<<") Start VPP!" << std::endl;
-
-                     // Process a frame asychronously (returns immediately)
-                     time1 = std::chrono::high_resolution_clock::now();
- 
-                     sts = pDecConfig->pmfxVPP->RunFrameVPPAsync(pDecConfig->pmfxVPP_In_Surfaces[nIndexVPP_In], pDecConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out), NULL, &syncpVPP);
-
-                     //std::cout << std::endl << "channel("<<pDecConfig->nChannel<<") Done VPP!" << std::endl;
-
-                     if (MFX_ERR_NONE < sts && !syncpVPP) // repeat the call if warning and no output
-                     {
-                         if (MFX_WRN_DEVICE_BUSY == sts)
-                         {
-                             std::cout << std::endl << "> warning: MFX_WRN_DEVICE_BUSY" << std::endl;
-                             usleep(1000); // wait if device is busy
-                         }
-                     }
-                     else if (MFX_ERR_NONE < sts && syncpVPP)
-                     {
-                            sts = MFX_ERR_NONE; // ignore warnings if output is available
-                            break;
-                     }
-                     else
-                         break; // not a warning
+                   if (MFX_ERR_NONE < sts && !syncpVPP) // repeat the call if warning and no output
+                   {
+                       if (MFX_WRN_DEVICE_BUSY == sts)
+                       {
+                           std::cout << std::endl << "> warning: MFX_WRN_DEVICE_BUSY" << std::endl;
+                           usleep(1000); // wait if device is busy
+                       }
+                   }
+                   else if (MFX_ERR_NONE < sts && syncpVPP)
+                   {
+                       sts = MFX_ERR_NONE; // ignore warnings if output is available
+                       break;
+                   }
+                   else{
+		       break; // not a warning
+                   }
                  }
 
                  // VPP needs more data, let decoder decode another frame as input
@@ -282,85 +447,327 @@ void *DecodeThreadFunc(void *arg)
                  // std::cout << ">> Vpp sts" << sts << std::endl;
                  // MSDK_BREAK_ON_ERROR(sts);
                 
-                 //std::cout << std::endl << "Channel("<<pDecConfig->nChannel<<") Vpp: sts" << sts << std::endl;
+  
                  if (MFX_ERR_NONE == sts)
                  { 
-                    //std::cout << std::endl << "Channel("<<pDecConfig->nChannel<<") Vpp sync oepration xxxx1."  << std::endl;
-                 
                     sts = pDecConfig->pmfxSession->SyncOperation(syncpVPP, 60000); // Synchronize. Wait until decoded frame is ready
 
-                    if(DUMP_VPP_OUTPUT)
+                    dpipe_buffer_t  *srcdata  = NULL;
+                    vsource_frame_t *srcframe = NULL;
+      
+                    srcdata = dpipe_get(pDecConfig->dpipe);
+                    if(srcdata == NULL)
+                       break;
+                    srcframe = (vsource_frame_t*) srcdata->pointer;
+                    srcframe->channel  = pDecConfig->nChannel;
+                    srcframe->frameno  = pDecConfig->nFrameProcessed;
+                    mfxU32 i, j, h, w;
+                    mfxFrameSurface1* pSurface = pDecConfig->pmfxVPP_Out_Surfaces[nIndexVPP_Out];
+
+                    pDecConfig->pmfxAllocator->Lock(pDecConfig->pmfxAllocator->pthis, 
+                                                      pSurface->Data.MemId, 
+                                                      &(pSurface->Data));
+                    mfxFrameInfo* pInfo = &pSurface->Info;
+                    mfxFrameData* pData = &pSurface->Data;
+                           
+                  #if 1
+
+                    mfxU8* ptr;
+                    if (pInfo->CropH > 0 && pInfo->CropW > 0)
                     {
+                        w = pInfo->CropW;
+                        h = pInfo->CropH;
+                    }
+                    else
+                    {
+                        w = pInfo->Width;
+                        h = pInfo->Height;
+                    }
 
-                        if(pDecConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out) == NULL){
-                            std::cout << ">> buffer is empty"	<< std::endl;
-                        }
-                        pDecConfig->pmfxAllocator->Lock(pDecConfig->pmfxAllocator->pthis, 
-                                                      pDecConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Data.MemId, 
-                                                      &(pDecConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Data));
+                    mfxU8 *pTemp = srcframe->imgbuf;
+                    ptr   = pData->B + (pInfo->CropX ) + (pInfo->CropY ) * pData->Pitch;
 
-                        mfxFrameInfo* pInfo = &(pDecConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Info);
-                        mfxFrameData* pData = &(pDecConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Data);
-                        mfxU32 i, j, h, w;
-                        mfxU32 iYsize, ipos;
-                        std::cout << ">> 4" << pData<<std::endl;
-
-                         
-                        mfxU8* ptr;
-
-                        if (pInfo->CropH > 0 && pInfo->CropW > 0)
-                        {
-                            w = pInfo->CropW;
-                            h = pInfo->CropH;
-                        }
-                        else
-                        {
-                            w = pInfo->Width;
-                            h = pInfo->Height;
-                        }
-
-                        ptr = MSDK_MIN( MSDK_MIN(pData->R, pData->G), pData->B);
-                        ptr = ptr + pInfo->CropX + pInfo->CropY * pData->Pitch;
-                        int dest_w = w;
-                        int dest_h =h;
-                        unsigned char *dest = (unsigned char *)malloc(dest_w*dest_h*4);
-                        for(i = 0; i < dest_h; i++)
-                        memcpy(dest + i*dest_w*4, ptr + i * pData->Pitch, dest_w*4);
-
-                        FILE *fp = fopen("./dump.rgb32","a+b");
-                        if(fp != NULL){
-                          fwrite(dest, 1, dest_w*dest_h*4, fp);
-                          fclose(fp);
-                        }
-                        free(dest);
-                        dest=NULL;
-
-                        // memcpy(dest + i * (pInfo->CropW), pData->Y + (pInfo->CropY * pData->Pitch + pInfo->CropX) + i * pData->Pitch, pInfo->CropW);
-                        pDecConfig->pmfxAllocator->Unlock(pDecConfig->pmfxAllocator->pthis, 
-                                                          pDecConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Data.MemId, 
-                                                          &(pDecConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Data));
+                    for (i = 0; i < w; i++)
+                    {
+                       memcpy(pTemp + i*w, ptr + i*pData->Pitch, w);
+                    }
 
 
-                        std::cout << ">> 5"  <<std::endl;
+                    ptr	= pData->G + (pInfo->CropX ) + (pInfo->CropY ) * pData->Pitch;
+                    pTemp = srcframe->imgbuf + w*h;
+                    for(i = 0; i < h; i++)
+                    {
+                       memcpy(pTemp  + i*w, ptr + i*pData->Pitch, w);
+                    }
 
-                        }
+                    ptr	= pData->R + (pInfo->CropX ) + (pInfo->CropY ) * pData->Pitch;
+                    pTemp = srcframe->imgbuf + 2*w*h;
+                    for(i = 0; i < h; i++)
+                    {
+                        memcpy(pTemp  + i*w, ptr + i*pData->Pitch, w);
+                    }
 
-                     }
+                  #else
 
+                    mfxU8* ptr;
 
-                     //std::cout << std::endl << "channel("<<pDecConfig->nChannel<<") Vpp: sts is complete" << sts << std::endl;
+                    if (pInfo->CropH > 0 && pInfo->CropW > 0)
+                    {
+                        w = pInfo->CropW;
+                        h = pInfo->CropH;
+                    }
+                    else
+                    {
+                        w = pInfo->Width;
+                        h = pInfo->Height;
+                    }
 
-                     pDecConfig->pVideoProcessOutQ->enqueueBuffer(pDecConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out),1);//Send IE for further processing
-                     }
-                }
-            
-       }
+                    ptr = MSDK_MIN( MSDK_MIN(pData->R, pData->G), pData->B);
+                    ptr = ptr + pInfo->CropX + pInfo->CropY * pData->Pitch;
 
-      pDecConfig->tmEnd = std::chrono::high_resolution_clock::now();
+                    for(i = 0; i <h; i++)
+                        memcpy(temp_img_buffer + i*w*4, ptr + i * pData->Pitch, w*4);
+                 #endif
+                    // basic info
+                    srcframe->imgpts     = srcframe->imgpts;
+                    srcframe->timestamp   = srcframe->timestamp;
+                    //srcframe->pixelformat = MFX_FOURCC_RGBP; //yuv420p;
+                    srcframe->realwidth   = w;
+                    srcframe->realheight  = h;
+                    srcframe->realstride  = w;
+                    srcframe->realsize = w * h * 3;
 
-      std::cout << std::endl<< "channel("<<pDecConfig->nChannel<<") pDecoding is done\r\n"<< std::endl;
+                    pDecConfig->pmfxAllocator->Unlock(pDecConfig->pmfxAllocator->pthis, 
+                                                          pSurface->Data.MemId, 
+                                                          &(pSurface->Data));
+
+				
+                    // cv::Mat frame(h, w, CV_8UC4);  
+                    // frame.data = temp_img_buffer;  
+                    //cv::Mat frame = createMat(temp_img_buffer, w, h);
+                    // cv::cvtColor(frame, srcframe->cvImg, CV_BGRA2BGR);
+                    //frame.copyTo(srcframe->cvImg);
+
+                    dpipe_store(pDecConfig->dpipe, srcdata);
+                    sem_post(&gNewtaskAvaiable);
+
+                }//if(sts==)
+            }//for(;;)
+        }    
+    }
+
+    pDecConfig->tmEnd = std::chrono::high_resolution_clock::now();
+
+    if(temp_img_buffer)
+    {
+        free(temp_img_buffer);
+        temp_img_buffer = NULL;
+    }
+    std::cout << std::endl<< "channel("<<pDecConfig->nChannel<<") pDecoding is done\r\n"<< std::endl;
 
     return (void *)0;
+
+}
+class ScheduleThreadConfig
+{
+ public:
+    ScheduleThreadConfig()
+    {
+    };
+    int gNet_input_width;
+    int gNet_input_height;
+
+    VideoWriter       *pvideo;
+    int                nChannel;
+    vector<dpipe_t *> *pvdpipe;
+    int                totalInferNum;
+    bool               bStartCount;
+    bool               bTerminated;
+ };
+
+void *ScheduleThreadFunc(void *arg)
+{
+    std::cout <<" Schedue Func thread called" << std::endl;
+        
+    struct ScheduleThreadConfig *pScheConfig = NULL;
+    bool bret    = false;
+    int  nFrame = 0;
+    int nInferThreadInstance = 0;
+    Detector::InsertImgStatus faceret=Detector::INSERTIMG_NULL;
+    vector<Detector::DetctorResult> objects;
+    int fpsCount = 0;
+    std::chrono::high_resolution_clock::time_point staticsStart, staticsEnd;
+    pScheConfig= (ScheduleThreadConfig *) arg;
+    if( NULL == pScheConfig)
+    {
+        std::cout << std::endl << "Failed Inference Thread Configuration" << std::endl;
+        return NULL;
+    }
+    pScheConfig->totalInferNum =0;
+    
+#ifndef ENABLE_WORKLOAD_BALANCE
+ while (grunning)
+   {
+        // wake-up when a new task avaiable
+        sem_wait(&gNewtaskAvaiable);
+        for (auto& dpipe : *(pScheConfig->pvdpipe)) 
+        {
+             dpipe_buffer_t  *srcdata   = NULL;
+             vsource_frame_t *srcframe  = NULL;
+             srcdata = dpipe_load(dpipe, NULL);
+             if( srcdata == NULL ) {
+                 continue;
+             }
+                
+             pScheConfig->totalInferNum++;
+             fpsCount++;
+             if(fpsCount == 1){
+                 staticsStart = std::chrono::high_resolution_clock::now();
+             }else if(fpsCount == 100){
+                 staticsEnd = std::chrono::high_resolution_clock::now();
+	
+                 chrono::duration<double> diffTime  = staticsEnd   - staticsStart;
+                 double fps = (100*1000/(diffTime.count()*1000.0));
+                 total_fps = fps;
+                 std::cout<< "Schedule FPS:" << fps <<"(f/s)"<<std::endl;
+                 fpsCount = 0;
+             }
+       
+             srcframe = (vsource_frame_t*) srcdata->pointer;
+             //cv::Mat frame = srcframe->cvImg;
+             cv::Mat frame = createMat(srcframe->imgbuf, gNet_input_width, gNet_input_height);
+             dpipe_put(dpipe, srcdata);
+
+
+             std::chrono::high_resolution_clock::time_point staticsStart3, staticsEnd3;
+             staticsStart3 = std::chrono::high_resolution_clock::now();
+      
+                   
+             faceret = gDetector[0].InsertImage(frame,objects,srcframe->channel, srcframe->frameno);	
+             staticsEnd3 = std::chrono::high_resolution_clock::now();
+             std::chrono::duration<double> diffTime3  = staticsEnd3   - staticsStart3;
+             //std::cout <<" Infer:" << diffTime3.count()*1000.0<<"ms"<<std::endl;	
+             if (Detector::INSERTIMG_GET == faceret ||Detector::INSERTIMG_PROCESSED == faceret)     {   //aSync call, you must use the ret image
+
+                 for(int k=0;k<objects.size();k++){
+                     each_frame[objects[k].inputid]+=1;
+                     total_frame[0]++;	
+                 }	
+                 if( Detector::INSERTIMG_GET == faceret && FLAGS_show){
+                     pthread_mutex_lock(&mutexshow); 	
+	             gresultque.push(objects);
+                     pthread_mutex_unlock(&mutexshow); 	
+                     sem_post(&g_semtshow);
+					
+                     pthread_mutex_lock(&mutexshow); 
+                     while(gresultque.size()>=2 && grunning){  //only cache 2 batch
+                         pthread_mutex_unlock(&mutexshow); 	
+                         usleep(1*1000); //sleep 2ms to recheck
+                         pthread_mutex_lock(&mutexshow); 
+                     }			
+                     pthread_mutex_unlock(&mutexshow); 					
+                 }			
+            }//if (Detector::INSERTIMG_GET 
+       }// for (auto& dpipe : *(pScheConfig->pvdpipe)) 
+	
+   }//while
+#else
+    while (grunning)
+    {
+        // wake-up when a new task avaiable
+        sem_wait(&gNewtaskAvaiable);
+        // scan all the input channel to get a new task
+        // Make sure all channel has the same priority
+        for (auto& dpipe : *(pScheConfig->pvdpipe)) 
+        {
+            dpipe_buffer_t  *srcdata   = NULL;
+            vsource_frame_t *srcframe  = NULL;
+            srcdata = dpipe_load_nowait(dpipe);
+            if( srcdata == NULL ) 
+            {
+                continue;
+            }
+            infer_task_t task;
+            task.dpipe   = dpipe;
+            task.dbuffer = srcdata;
+
+            pScheConfig->totalInferNum++;
+#if 1
+          
+            int      nChannel  = 0;
+            srcframe = (vsource_frame_t*) srcdata->pointer;
+            nChannel = srcframe->channel;
+            if(nChannel == 0)
+            {
+               nInferThreadInstance = 1;
+               pthread_mutex_lock(&mutexinfer[nInferThreadInstance]);     
+               gtaskque[nInferThreadInstance].push(task);
+               pthread_mutex_unlock(&mutexinfer[nInferThreadInstance]); 
+               sem_post(&gsemtInfer[nInferThreadInstance]);
+               nFrame++;
+            }else
+            {
+           
+               nInferThreadInstance = 0;
+               pthread_mutex_lock(&mutexinfer[nInferThreadInstance]);     
+               gtaskque[nInferThreadInstance].push(task);
+               pthread_mutex_unlock(&mutexinfer[nInferThreadInstance]); 
+               sem_post(&gsemtInfer[nInferThreadInstance]);
+               nFrame++; 
+           }
+#else
+            if(nInferThreadInstance == NUM_OF_GPU_INFER -1 )
+            {
+                // In case there are two CPU nodes if the CPU is power enough
+                static unsigned int toggleCPU =0;
+                toggleCPU++;
+                if( (NUM_OF_GPU_INFER -1 ) == 1) toggleCPU =0;
+
+
+                if(nFrame < (NUM_OF_GPU_INFER -1)*2)
+                {
+                    pthread_mutex_lock(&mutexinfer[nInferThreadInstance -toggleCPU%2]);     
+                    gtaskque[nInferThreadInstance-toggleCPU%2].push(task);
+                    pthread_mutex_unlock(&mutexinfer[nInferThreadInstance-toggleCPU%2]); 
+                    sem_post(&gsemtInfer[nInferThreadInstance-toggleCPU%2]);
+                    nFrame++;
+                 }
+                 // Change the next infernece deve as GPU
+                 if(nFrame == (NUM_OF_GPU_INFER -1)*2)
+                 {
+                     nInferThreadInstance = 0;
+                     nFrame = 0;
+                 }
+             }else{
+                 // Push batch size buffer to GPU 
+                 if(nFrame < g_batchSize)
+                 {
+                     pthread_mutex_lock(&mutexinfer[nInferThreadInstance]);     
+                     gtaskque[nInferThreadInstance].push(task);
+                     pthread_mutex_unlock(&mutexinfer[nInferThreadInstance]); 
+                     sem_post(&gsemtInfer[nInferThreadInstance]);
+                     nFrame++;
+                 }
+                 // change he next Node as CPU
+                 if(nFrame == g_batchSize)
+                 {
+                      nInferThreadInstance = nInferThreadInstance==0? (NUM_OF_GPU_INFER -1):0 ;
+                      nFrame = 0;
+                 }
+             }//if(nInferThreadInstance == NUM_OF_GPU_INFER -1 )
+ #endif
+      }// for (auto& dpipe : *(pScheConfig->pvdpipe))
+     
+   }//while
+  
+#endif
+	
+exit:
+	
+    std::cout << std::endl<<  "Schedule thread is done\r\n"<< std::endl;
+ 
+    return NULL;
+
 
 }
 
@@ -368,124 +775,181 @@ void *DecodeThreadFunc(void *arg)
 class InferThreadConfig
  {
  public:
-     InferThreadConfig()
-     {
-     };
-     int totalDecNum;
-     MFXVideoVPP  *pmfxVPP;
-     mfxU16 nDecSurfNum;
-     mfxU16 nVPP_In_SurfNum;
-     mfxFrameSurface1** pmfxVPP_In_Surfaces;
-     mfxFrameSurface1** pmfxVPP_Out_Surfaces;
-     MFXVideoSession *pmfxSession;
+    InferThreadConfig()
+    {
+    };
 
-     BufferQueue      *pVideoProcessINQ;
-     BufferQueue      *pVideoProcessOutQ;
-     mfxFrameAllocator *pmfxAllocator;
-     unsigned char  *pResizedFrame;
-
-     int gNet_input_width;
-     int gNet_input_height;
-
-     float normalize_factor;
-     VideoWriter *pvideo;
-     int nChannel;
+    VideoWriter       *pvideo;
+    int                nChannel;
+    vector<dpipe_t *> *pvdpipe;
+    int                totalInferNum;
+    bool               bStartCount;
+    bool               bTerminated;
+    int nBatch;
  };
+inline int set_cpu(int i)
+{
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+ 
+    CPU_SET(i,&mask);
 
+    std::cout<<"thread "<<pthread_self()<<" i="<<i<<std::endl;
+    if(-1 == pthread_setaffinity_np(pthread_self() ,sizeof(mask),&mask))
+    {
+        return -1;
+    }
+    return 0;
+}
 void *InferThreadFunc(void *arg)
 {
     struct InferThreadConfig *pInferConfig = NULL;
-    int nFrame = 0;
-    mfxStatus sts = MFX_ERR_NONE;
-    mfxSyncPoint syncpVPP;
- 
-    int nIndexDec	   = 0;
-    int nIndexVPP_In  = 0;
-    int nIndexVPP_Out = 0;
-    bool bret    = false;
-
+    int  nFrame = 0;
     pInferConfig= (InferThreadConfig *) arg;
     if( NULL == pInferConfig)
     {
         std::cout << std::endl << "Failed Inference Thread Configuration" << std::endl;
         return NULL;
     }
-#if 1
-    // Always waiting for feed from decoding process.
-    while (1)
+    pInferConfig->totalInferNum =0;
+
+    std::chrono::high_resolution_clock::time_point staticsStart, staticsEnd;
+    staticsStart = std::chrono::high_resolution_clock::now();
+
+
+    Detector::InsertImgStatus faceret=Detector::INSERTIMG_NULL;
+    int fpsCount = 0;
+    set_cpu(pInferConfig->nChannel);
+    
+    std::cout <<" InferThreadFunc called : channelID " << pInferConfig->nChannel << std::endl;
+    while (grunning)
     {
-        int current_batchindex = 0;
-        if (nFrame >= pInferConfig->totalDecNum) break;
+        sem_wait(&gsemtInfer[pInferConfig->nChannel]);
+        while(!gtaskque[pInferConfig->nChannel].empty()){
+            
+            pthread_mutex_lock(&mutexinfer[pInferConfig->nChannel]);     
+            infer_task_t task = gtaskque[pInferConfig->nChannel].front();   
+            gtaskque[pInferConfig->nChannel].pop();           
+            pthread_mutex_unlock(&mutexinfer[pInferConfig->nChannel]); 
 
-        nIndexVPP_Out = pInferConfig->pVideoProcessOutQ->acquireBuffer(2);
+            dpipe_buffer_t  *srcdata   = task.dbuffer;
+            vsource_frame_t *srcframe  = NULL;
+            int              nChannel  = 0;
 
-        #if 1// INFERENCE_PHASE_1_ENABLE
+            nFrame++;
+            pInferConfig->totalInferNum++;
+			
+            srcframe = (vsource_frame_t*) srcdata->pointer;
+            nChannel = srcframe->channel;
 
-        pInferConfig->pmfxAllocator->Lock(pInferConfig->pmfxAllocator->pthis, pInferConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Data.MemId, &(pInferConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Data));
-        WriteRawFrameToMemory(pInferConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out), pInferConfig->gNet_input_width, pInferConfig->gNet_input_height,  pInferConfig->pResizedFrame, MFX_FOURCC_RGBP);
-        pInferConfig->pmfxAllocator->Unlock(pInferConfig->pmfxAllocator->pthis, pInferConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Data.MemId, &(pInferConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Data));
-        #endif
-
-        pInferConfig->pVideoProcessOutQ->returnBuffer(nIndexVPP_Out, 2);
-        nFrame++;
-    #if 1 //INFERENCE_PHASE_2_ENABLE			
-        bret = IE_Execute(pInferConfig->nChannel, pInferConfig->gNet_input_width, pInferConfig->gNet_input_height, pInferConfig->normalize_factor,  pInferConfig->pResizedFrame, &current_batchindex);
-        if(bret == false)
-        {
-            std::cout << "\t. [error] Failed to execute inferencing." << std::endl;
-            break;
-        }
-
-    #if VERIFY_PURPOSE
-        if(current_batchindex == g_batchSize)
-           IE_SaveOutput(pInferConfig->nChannel,false, pInferConfig->pvideo);
-    #endif
-    #endif
-     
-    }
-    std::cout << std::endl<<  "Channel ("<<pInferConfig->nChannel<<") Inference thread is done\r\n"<< std::endl;
-#else
-    size_t m = 0;
-	while (1)
-	{
-		int batchindex = 0;
+            fpsCount++;
+            if(fpsCount == 1){
+                staticsStart = std::chrono::high_resolution_clock::now();
+            }else if(fpsCount == 100){
+                staticsEnd = std::chrono::high_resolution_clock::now();
 	
-		if (nFrame >= pInferConfig->totalDecNum) break;
+                chrono::duration<double> diffTime  = staticsEnd   - staticsStart;
+                double fps = (100*1000/(diffTime.count()*1000.0));
+                std::cout<< "Infer  "<< pInferConfig->nChannel<< " FPS:" << fps <<"(f/s)"<<std::endl;
+                fpsCount = 0;
+            }
+            // Maybe this can be moved to scheduler.
+            //cv::Mat frame = srcframe->cvImg; 
+            cv::Mat frame = createMat(srcframe->imgbuf, gNet_input_width, gNet_input_height);
+            dpipe_put(task.dpipe, srcdata);
+            vector<Detector::DetctorResult> objects;
+            faceret = gDetector[pInferConfig->nChannel].InsertImage(frame,objects,srcframe->channel, srcframe->frameno);	
+	
+            if (Detector::INSERTIMG_GET == faceret ||Detector::INSERTIMG_PROCESSED == faceret)     {  //aSync call, you must use the ret image
+                for(int k=0;k<objects.size();k++){
+                    each_frame[objects[k].inputid]+=1;
+                    total_frame[pInferConfig->nChannel]++;	
+                }	
+                if( Detector::INSERTIMG_GET == faceret){
+                   if(pInferConfig->nChannel ==0){
+		            pthread_mutex_lock(&mutexshow); 	
+		            gresultque.push(objects);
+		            pthread_mutex_unlock(&mutexshow); 	
+		            sem_post(&g_semtshow);
+					
+		            pthread_mutex_lock(&mutexshow); 
+		            while(gresultque.size()>=2 && grunning){  //only cache 2 batch
+		                pthread_mutex_unlock(&mutexshow); 	
+		                usleep(1*1000); //sleep 2ms to recheck
+		                pthread_mutex_lock(&mutexshow); 
+		            }			
+		            pthread_mutex_unlock(&mutexshow); 
+                    }else{
+		            pthread_mutex_lock(&mutexshow); 	
+		            gresultque1.push(objects);
+		            pthread_mutex_unlock(&mutexshow); 	
+		            sem_post(&g_semtshow);
+			/*		
+		            pthread_mutex_lock(&mutexshow); 
+		            while(gresultque1.size()>=2 && grunning){  //only cache 2 batch
+		                pthread_mutex_unlock(&mutexshow); 	
+		                usleep(1*1000); //sleep 2ms to recheck
+		                pthread_mutex_lock(&mutexshow); 
+		            }			
+		            pthread_mutex_unlock(&mutexshow);*/
+                    }
+          					
+               }//if( Detector::INSERTIMG_GET == faceret){			
+            }// if (Detector::INSERTIMG_GET == faceret ||D
 
-		nIndexVPP_Out = pInferConfig->pVideoProcessOutQ->acquireBuffer(2);
-		pInferConfig->pmfxAllocator->Lock(pInferConfig->pmfxAllocator->pthis, pInferConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Data.MemId, &(pInferConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Data));
+        } // while(!gtaskque[pInferConfig->nChannel].empty()){     
+    }//while (grunning)
+   
 
-		PrepareData(pInferConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out), MFX_FOURCC_RGBP, pInferConfig->gNet_input_width, pInferConfig->gNet_input_height, pInferConfig->normalize_factor, &m, &batchindex);
-
-		pInferConfig->pmfxAllocator->Unlock(pInferConfig->pmfxAllocator->pthis, pInferConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Data.MemId, &(pInferConfig->pVideoProcessOutQ->getBuffer(nIndexVPP_Out)->Data));
-
-		pInferConfig->pVideoProcessOutQ->returnBuffer(nIndexVPP_Out, 2);
-		nFrame++;
-	    if(batchindex == g_batchSize)	
-	    {
-			bret = IE_Execute_LowLatency(&m);
-			if(bret == false)
-			{
-				std::cout << "\t. [error] Failed to execute inferencing." << std::endl;
-				break;
-			}
-
-	    }
-
-	}
-#endif	
-   std::cout << std::endl<<  "Channel ("<<pInferConfig->nChannel<<") Inference thread is done\r\n"<< std::endl;
+    std::cout<< "Inference thread "<<pInferConfig->nChannel <<" is done\r\n"<< std::endl;
  
-   return (void *)0;
-
-
+    return (void *)0;
 }
 
- 
+int
+alignment(void *ptr, int alignto) {
+	int mask = alignto - 1;
+#ifdef __x86_64__
+	return alignto - (((unsigned long long) ptr) & mask);
+#else
+	return alignto - (((unsigned) ptr) & mask);
+#endif
+}
+#define VSOURCE_ALIGNMENT 16
+
+vsource_frame_t *
+vsource_frame_init(int channel, vsource_frame_t *frame) {
+    int i;
+
+
+    bzero(frame, sizeof(vsource_frame_t));
+    //
+  
+    frame->linesize[i] = gNet_input_width;
+    
+    frame->maxstride =0;
+    frame->imgbufsize = gNet_input_width * gNet_input_height *3;
+    frame->imgbuf = ((unsigned char *) frame) + sizeof(vsource_frame_t);
+    frame->imgbuf += alignment(frame->imgbuf, VSOURCE_ALIGNMENT);
+  
+    bzero(frame->imgbuf, frame->imgbufsize);
+    return frame;
+}
+
+
 int main(int argc, char *argv[])
 {
     bool bret = false;
+    vector<dpipe_t *>  vdpipe;
+    float normalize_factor = 1.0;
+    dpipe_t *dpipe[NUM_OF_CHANNELS];
 
+    std::vector<pthread_t>    vScheduleThreads;
+    std::vector<pthread_t>    vInferThreads;
+    std::vector<pthread_t>    vDecThreads;
+    std::vector<pthread_t>    vAssistThreads;
+    std::vector<InferThreadConfig *> vpInferThreadConfig;
+    std::vector<ScheduleThreadConfig *> vpScheduleThreadConfig;
     // =================================================================
 
     // Parse command line parameters
@@ -515,74 +979,28 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if ((FLAGS_t.compare("SSD") && (FLAGS_t.compare("YOLO") && (FLAGS_t.compare("YOLO-tiny")))) != 0) {
-        std::cout << " [error] Inference type must be SSD, YOLO, or YOLO-tiny" << std::endl;
-        App_ShowUsage();
-        return 1;
-    }
-
     // prepare video input
     std::cout << std::endl;
 
-    std::string input_filename = FLAGS_i;
-    bool bSingleImageMode = false;
-    std::vector<std::string> imgExt = { ".bmp", ".jpg" };
+    std::string input_filename[NUM_OF_CHANNELS] = { FLAGS_i};
 
-    for (size_t i = 0; i < imgExt.size(); i++) {
-        if (input_filename.rfind(imgExt[i]) != std::string::npos) {
-            bSingleImageMode = true;
-            std::cout << "> Use [Intel CV SDK] only." << std::endl;
-            break;
-        }
-    }
+    input_filename[0] = "../../test_content/video/0.h264";
+    input_filename[1] = "../../test_content/video/1.h264";
+    input_filename[2] = "../../test_content/video/2.h264"; 
+    input_filename[3] = "../../test_content/video/3.h264";
+    input_filename[4] = "../../test_content/video/4.h264"; 
+    input_filename[5] = "../../test_content/video/5.h264"; 
+
 
 // =================================================================
 // Intel Media SDK
 //
 // if input file has ".264" extension, let assume we want to enable
 // media sdk to decode video elementary stream here.
-    bool bUseMediaSDK = false;
+    bool bUseMediaSDK = true;
 
-    if(bSingleImageMode == false)
-    {
-        std::vector<std::string> eleExt = {".264", ".h264"};
-        for (size_t i = 0; i < eleExt.size(); i++)
-        {
-            if (input_filename.rfind(eleExt[i]) != std::string::npos)
-            {
-                bUseMediaSDK = true;
-                std::cout << "> Use [Intel Media SDK] and [CV SDK]." << std::endl;
-                break;
-            }
-        }
-    }
+    std::cout << "> Use [Intel Media SDK] and [CV SDK]." << std::endl;
 
-// Check input file state
-    std::ifstream infile(FLAGS_i);
-
-    if(!infile.is_open())
-    {
-        std::cout << "\t. [error] Can't open input file." << std::endl;
-        return 1;
-    }
-
-
-
-// =================================================================
-
-// Read class names
-    std::cout << "> Read labels for image classification." << std::endl;
-
-    std::ifstream labelfile(FLAGS_l);
-
-    if (!labelfile.is_open()) {
-        std::cout << "\t. [error] Can't open labels file." << std::endl;
-        return 1;
-    }
-
-    for (int i = 0; i < NUMLABELS; i++) {
-        getline(labelfile, g_labels[i]);
-    }
 
 #ifdef WIN32
     std::string archPath = "../../../bin" OS_LIB_FOLDER "intel64/Release/";
@@ -590,101 +1008,104 @@ int main(int argc, char *argv[])
     std::string archPath = "../../../lib/" OS_LIB_FOLDER "intel64";
 #endif
 
+
 //-------------------------------------------
 // Inference Engine Initialization
-    std::cout << std::endl << "> Init CV SDK IE session." << std::endl;
+    std::cout << std::endl << "> Init OpenVINO Inference session." << std::endl;
     VideoWriter *video[NUM_OF_CHANNELS];
-    for(int nLoop=0; nLoop< FLAGS_c; nLoop++)
+
+    for(int nLoop=0; nLoop< NUM_OF_GPU_INFER; nLoop++)
     {
-
-        g_pIE[nLoop] = new CMyIE;
-
-    // Load plugin
-        std::cout << "\t. Load inference engine plugin (" << FLAGS_p << ")." << std::endl;
-
-        std::vector<std::string> pluginDirs = {FLAGS_pp, archPath, DEFAULT_PATH_P, ""};
-        std::string plugin = FLAGS_p;   // mklDNN/ clDNN plugin
-        std::string device = FLAGS_d;   // CPU or GPU
-
-         g_pIE[nLoop]->LoadPlugIn(pluginDirs, plugin, device);
-
-    // Enable performance counters
-        if (FLAGS_pc) {
-            std::cout << "\t. Enable performance counters." << std::endl;
-             g_pIE[nLoop]->EnablePerformanceCounters();
-        }
-
-    // Read model (network, weights)
-        std::cout << "\t. Read model (network, weights)." << std::endl;
-        bret =  g_pIE[nLoop]->ReadModel(FLAGS_m);
-
-        if (bret == false)
-        {
-            std::cout << "\t. [error] Failed to read model." << std::endl;
-            return 1;
-        }
-
-    // Set the target device
-        if (!FLAGS_d.empty())
-        {
-            std::cout << "\t. Set the target device: " << FLAGS_d << std::endl;
-             g_pIE[nLoop]->SetTargetDevice(FLAGS_d);
-        }
-
-        if (bSingleImageMode)
-            g_batchSize = 1;
-        else
-            g_batchSize = FLAGS_batch;
-
-    // Set batch size
-        std::cout << "\t. Set batch size: " << g_batchSize << std::endl;
-         g_pIE[nLoop]->SetBatchSize(g_batchSize);
-
-        //std::cout << "Batch size = " << g_pIE->GetBatchSize(); << std::endl;
-
-    //  Inference engine input/output setup
-        std::cout << "\t. Setting-up input, output blobs..." << std::endl;
-
-  
-
-        bret =  g_pIE[nLoop]->IOBlobsSetting(&gNet_input_width[nLoop], 
-        &gNet_input_height[nLoop]);
-        std::cout << "\t gNet_input_width." 
-        <<gNet_input_width[nLoop]<<"gNet_input_height"<<gNet_input_height[nLoop]<< std::endl;
-
-        if (bret == false)
-        {
-            std::cout << "\t. [error] Failed to set IO blobs." << std::endl;
-            return 1;
-        }
-
-    // Prepare output file to archive result video
+        int ret;
+        cv::Size net_size;
         char szBuffer[256]={0};
+        std::string binFileName = fileNameNoExt(FLAGS_m) + ".bin";
+        if(nLoop==0){
+            std::string device = FLAGS_d;
+            ret = gDetector[nLoop].Load(device, FLAGS_m, binFileName, FLAGS_batch);
+        }else{
+            std::string device = "CPU";
+            //gDetector[nLoop].Load(device, FLAGS_m, binFileName, FLAGS_batch);
+            ret = gDetector[nLoop].Load(device, "../../test_content/IR/SSD_mobilenet/MobileNet-SSD.xml", "../../test_content/IR/SSD_mobilenet/MobileNet-SSD.bin",NUM_OF_CPU_BATCH);
+        }
+        if(ret != 0){
+            std::cout<< "Failed to load the provided model files, either file not found or datatype is not supported by selected device"<<std::endl;
+            return 1;
+        }  
+        g_batchSize = FLAGS_batch;
+        net_size = gDetector[nLoop].GetNetSize();
+        gNet_input_width = net_size.width;
+        gNet_input_height = net_size.height;
+        std::cout << "\t gNet_input_width:" 
+	    <<gNet_input_width<<" gNet_input_height:"<<gNet_input_height<< std::endl;
+
+	// Prepare output file to archive result video
         sprintf(szBuffer,"out_%d.h264",nLoop);
         video[nLoop]= new VideoWriter(szBuffer, CV_FOURCC('H', '2', '6', '4'), 10, 
-        Size(gNet_input_width[nLoop], gNet_input_height[nLoop]), true);
-    // Load Network to plugin
-        std::cout << "\t. Load network to plugin." << std::endl;
-
-        bret =  g_pIE[nLoop]->LoadNetwork();
-
-        if (bret == false)
-        {
-            std::cout << "\t. [error] Failed to load network." << std::endl;
-            return 1;
-        }
- 
+	    Size(gNet_input_width, gNet_input_height), true);
+	
+        sem_init(&gsemtInfer[nLoop], 0, 0);
+        pthread_mutex_init(&mutexinfer[nLoop],NULL);
     }
-    std::cout << "> Done Initialization CV SDK IE session." << std::endl;
 
-    Mat frame;
-    float normalize_factor = 1.0;
+    std::cout << "> Done Initialization OpenVNIO session." << std::endl;
 
-    if (FLAGS_t.compare("SSD") != 0)
-        normalize_factor = 256;
+
 // Done, Inference Engine Initialization
 
+    if(FLAGS_show == true){
+        if(FLAGS_c > 5 ){
+           std::cout << "\t. current version only support display maximum 6  streams." << std::endl;
+           return 1;
+        }
+        // Initialize display thread if needed
+        DisplayThreadConfig *pDispThreadConfig = new DisplayThreadConfig();
+        memset(pDispThreadConfig, 0, sizeof(DisplayThreadConfig));
+        pDispThreadConfig->nCellWidth            = gNet_input_width;
+        pDispThreadConfig->nCellHeight           = gNet_input_height;
+        pDispThreadConfig->nRows                 = 2;
+        pDispThreadConfig->nCols                 = 3;
+
+        sem_init(&g_semtshow, 0, 0);
+        pthread_mutex_init(&mutexshow,NULL);
+        pthread_t threadid;
+        pthread_create(&threadid, NULL, DisplayThreadFunc, (void *)(pDispThreadConfig));
+
+        vAssistThreads.push_back(threadid) ;     
+    }
+    if(1){
+        pthread_t perfThreadid;
+        pthread_create(&perfThreadid, NULL, thr_fps, NULL);
+        vAssistThreads.push_back(perfThreadid) ;     
+    }
+
+    //Initialize dpipe between decoding and scheduler thread
+    for(int nLoop=0; nLoop< FLAGS_c; nLoop++)
+    {
+        // Initialize dbuffer between decoding thread and inference thread.
+        // 4 buffer for each dpipe buffer
+        char szBuffer[256]={0};
+        sprintf(szBuffer, "SharedInferBuf%d", nLoop);
+        dpipe[nLoop] = dpipe_create(0, szBuffer, 100,
+                                    sizeof(vsource_frame_t) + gNet_input_width*gNet_input_height*4);
+        if( dpipe == NULL ) {
+            std::cout<<"create dst-pipeline failed .\n"<<std::endl;
+            return 1;
+        }
+        dpipe_buffer_t *data = NULL;
+	
+        for(data = dpipe[nLoop]->in; data != NULL; data = data->next) {
+            if(vsource_frame_init(0, (vsource_frame_t*) data->pointer) == NULL) {
+                printf("Hello world!\n");
+                return 1;
+            }
+        }
+        vdpipe.push_back(dpipe[nLoop]);
+    }
+   
+
 //-------------------------------------------
+    Mat frame;
 
     bool no_more_data = false;
     int totalFrames = 0;
@@ -694,7 +1115,6 @@ int main(int argc, char *argv[])
     //
     // Use Intel Media SDK for decoding and VPP (resizing)
 
-    //std::vector<std::thread > vWorkThreads;
     mfxStatus sts;
     mfxIMPL impl; 				  // SDK implementation type: hardware accelerator?, software? or else
     mfxVersion ver;				  // media sdk version
@@ -703,19 +1123,14 @@ int main(int argc, char *argv[])
     MFXVideoSession   mfxSession[NUM_OF_CHANNELS];
     mfxFrameAllocator mfxAllocator[NUM_OF_CHANNELS];	 
 
-    BufferQueue *pVideoProcessINQ[NUM_OF_CHANNELS];
-    BufferQueue *pVideoProcessOutQ[NUM_OF_CHANNELS];
-
     FILE *f_i[NUM_OF_CHANNELS];
     mfxBitstream mfxBS[NUM_OF_CHANNELS];
     mfxFrameSurface1** pmfxDecSurfaces[NUM_OF_CHANNELS];
     mfxFrameSurface1** pmfxVPP_In_Surfaces[NUM_OF_CHANNELS];
     mfxFrameSurface1** pmfxVPP_Out_Surfaces[NUM_OF_CHANNELS];
 
-    unsigned char *pResizedFrame;
-    std::vector<std::thread >        vWorkThreads;
     std::vector<DecThreadConfig *>   vpDecThradConfig;
-    std::vector<InferThreadConfig *> vpInferThreadConfig;
+
     std::vector<MFXVideoDECODE *>    vpMFXDec;
     std::vector<MFXVideoVPP *>       vpMFXVpp;
 
@@ -724,15 +1139,11 @@ int main(int argc, char *argv[])
 
     for(int nLoop=0; nLoop< FLAGS_c; nLoop++)
     {
-        
-        g_resized[nLoop] = new Mat[g_batchSize];
-        
         // =================================================================
          // Intel Media SDK
-        std::cout << "\t. Open input file: " << input_filename << std::endl;
-        std::cout << "\t. Create output file: ./resized.rgb32" << std::endl;
-
-        f_i[nLoop] = fopen(input_filename.c_str(), "rb");
+        std::cout << "\t. Open input file: " << input_filename[nLoop] << std::endl;
+       
+        f_i[nLoop] = fopen(input_filename[nLoop].c_str(), "rb");
         //f_o = fopen("./resized.rgb32", "wb");
 
         // Initialize Intel Media SDK session
@@ -787,10 +1198,12 @@ int main(int argc, char *argv[])
         //   (Note that when using HW acceleration D3D surfaces are prefered, for better performance)
         std::cout << "\t. Start preparing VPP In/ Out parameters." << std::endl;
 
+
         mfxU32 fourCC_VPP_Out =  MFX_FOURCC_RGBP;
         mfxU32 chromaformat_VPP_Out = MFX_CHROMAFORMAT_YUV444;
         mfxU8 bpp_VPP_Out     = 24;
         mfxU8 channel_VPP_Out = 3;
+        mfxU16 nDecSurfNum= 0;
 
         mfxVideoParam VPPParams;
         mfxExtVPPScaling scalingConfig;
@@ -828,8 +1241,8 @@ int main(int argc, char *argv[])
         VPPParams.vpp.Out.ChromaFormat  = chromaformat_VPP_Out;
         VPPParams.vpp.Out.CropX         = 0;
         VPPParams.vpp.Out.CropY         = 0;
-        VPPParams.vpp.Out.CropW         = gNet_input_width[nLoop]; // SSD: 300, YOLO-tiny: 448
-        VPPParams.vpp.Out.CropH         = gNet_input_height[nLoop];    // SSD: 300, YOLO-tiny: 448
+        VPPParams.vpp.Out.CropW         = gNet_input_width; // SSD: 300, YOLO-tiny: 448
+        VPPParams.vpp.Out.CropH         = gNet_input_height;    // SSD: 300, YOLO-tiny: 448
         VPPParams.vpp.Out.PicStruct     = MFX_PICSTRUCT_PROGRESSIVE;
         VPPParams.vpp.Out.FrameRateExtN = 30;
         VPPParams.vpp.Out.FrameRateExtD = 1;
@@ -877,10 +1290,10 @@ int main(int argc, char *argv[])
         if(MFX_ERR_NONE > sts)
         {
             MSDK_PRINT_RET_MSG(sts);
-            goto exit_here;
+            return 1;
         }
         
-        mfxU16 nDecSurfNum = DecResponse.NumFrameActual;
+        nDecSurfNum = DecResponse.NumFrameActual;
 
         std::cout << "\t\t. Decode Surface Actual Number: " << nDecSurfNum << std::endl;
 
@@ -890,7 +1303,7 @@ int main(int argc, char *argv[])
         if(!pmfxDecSurfaces[nLoop] )
         {
             MSDK_PRINT_RET_MSG(MFX_ERR_MEMORY_ALLOC);            
-            goto exit_here;
+            return 1;//goto exit_here;
         }
         
         for (int i = 0; i < nDecSurfNum; i++)
@@ -909,12 +1322,13 @@ int main(int argc, char *argv[])
         memcpy(&VPPRequest[0].Info, &(VPPParams.vpp.In), sizeof(mfxFrameInfo)); // allocate VPP input frame information
 
         sts = mfxAllocator[nLoop].Alloc(mfxAllocator[nLoop].pthis, &(VPPRequest[0]), &VPP_In_Response);
+#if 1
 
         printf("sts=%d\r\n", sts);
         if(MFX_ERR_NONE > sts)
         {
             MSDK_PRINT_RET_MSG(sts);
-            goto exit_here;
+            return 1;
         }
 
         mfxU16 nVPP_In_SurfNum = VPP_In_Response.NumFrameActual;
@@ -927,7 +1341,7 @@ int main(int argc, char *argv[])
         if(!pmfxVPP_In_Surfaces[nLoop])
         {
             MSDK_PRINT_RET_MSG(MFX_ERR_MEMORY_ALLOC);            
-            goto exit_here;
+            return 1;
         }
         
         for (int i = 0; i < nVPP_In_SurfNum; i++)
@@ -950,7 +1364,7 @@ int main(int argc, char *argv[])
         if(MFX_ERR_NONE > sts)
         {
             MSDK_PRINT_RET_MSG(sts);
-            goto exit_here;
+            return 1;
         }
 
         mfxU16 nVPP_Out_SurfNum = VPP_Out_Response.NumFrameActual;
@@ -963,7 +1377,7 @@ int main(int argc, char *argv[])
         if(!pmfxVPP_Out_Surfaces[nLoop])
         {
             MSDK_PRINT_RET_MSG(MFX_ERR_MEMORY_ALLOC);            
-            goto exit_here;
+            return 1;
         }
 
         for (int i = 0; i < nVPP_Out_SurfNum; i++)
@@ -978,6 +1392,7 @@ int main(int argc, char *argv[])
 
         // Initialize the Media SDK decoder
         std::cout << "\t. Init Intel Media SDK Decoder" << std::endl;
+
 
         sts = pmfxDEC->Init(&DecParams);
         MSDK_IGNORE_MFX_STS(sts, MFX_WRN_PARTIAL_ACCELERATION);
@@ -1004,27 +1419,6 @@ int main(int argc, char *argv[])
         std::cout << std::endl;
 
        // Start decoding the frames from the stream
-
-       pResizedFrame = (unsigned char *)malloc(gNet_input_width[nLoop] * 
-       gNet_input_height[nLoop] * channel_VPP_Out); // resized frame from VPP
-
-
-        // =====Create three threads (One for Encoding/VideoProcessing/Inference/)===
-        pVideoProcessOutQ[nLoop] = new BufferQueue(100);
-        // Register all VPP in buffers to the pVideoProcessQ.
-        for (mfxU16 i = 0; i < nVPP_Out_SurfNum; i++)
-        {
-            pVideoProcessOutQ[nLoop]->registerBuffer(pmfxVPP_Out_Surfaces[nLoop][i]);
-        }
-
-
-        pVideoProcessINQ[nLoop] = new BufferQueue(100);
-        // Register all VPP in buffers to the pVideoProcessQ.
-        for (mfxU16 i = 0; i < nDecSurfNum; i++)
-        {
-            pVideoProcessINQ[nLoop]->registerBuffer(pmfxDecSurfaces[nLoop][i]);
-        }
-
         for (mfxU16 i = 0; i < nDecSurfNum; i++)
         {
              std::cout<<"dec:handle (%d): "<<pmfxDecSurfaces[nLoop][i]<<std::endl;
@@ -1036,10 +1430,7 @@ int main(int argc, char *argv[])
              std::cout<<"vpp:handle: "<<pmfxVPP_In_Surfaces[nLoop][i]<<std::endl;
         }
 
-        int ret=0;
-
-
-        int decOutputFile = open("./dump.nv12", O_APPEND | O_CREAT);
+        //int decOutputFile = open("./dump.nv12", O_APPEND | O_CREAT, S_IRWXO);
 
         DecThreadConfig *pDecThreadConfig = new DecThreadConfig();
         memset(pDecThreadConfig, 0, sizeof(DecThreadConfig));
@@ -1049,75 +1440,115 @@ int main(int argc, char *argv[])
         pDecThreadConfig->pmfxVPP                = pmfxVPP;
         pDecThreadConfig->nDecSurfNum            = nDecSurfNum;
         pDecThreadConfig->nVPP_In_SurfNum        = nVPP_In_SurfNum;
+        pDecThreadConfig->nVPP_Out_SurfNum       = nVPP_Out_SurfNum;
         pDecThreadConfig->pmfxDecSurfaces        = pmfxDecSurfaces[nLoop];
         pDecThreadConfig->pmfxVPP_In_Surfaces    = pmfxVPP_In_Surfaces[nLoop];
         pDecThreadConfig->pmfxVPP_Out_Surfaces   = pmfxVPP_Out_Surfaces[nLoop];
         pDecThreadConfig->pmfxBS                 = &mfxBS[nLoop];
         pDecThreadConfig->pmfxSession            = &mfxSession[nLoop];
-        pDecThreadConfig->pVideoProcessINQ       = pVideoProcessINQ[nLoop];
-        pDecThreadConfig->pVideoProcessOutQ      = pVideoProcessOutQ[nLoop];
         pDecThreadConfig->pmfxAllocator          = &mfxAllocator[nLoop];
-        pDecThreadConfig->decOutputFile          = decOutputFile;
+       // pDecThreadConfig->decOutputFile          = decOutputFile;
         pDecThreadConfig->nChannel               = nLoop;
         pDecThreadConfig->nFPS                   = 1;//30/pDecThreadConfig->nFPS;
-        pDecThreadConfig->bStartCount			 = false;
-        pDecThreadConfig->nFrameProcessed		 = 0;
+        pDecThreadConfig->bStartCount            = false;
+        pDecThreadConfig->nFrameProcessed        = 0;
+        pDecThreadConfig->dpipe                  = dpipe[nLoop];
 
         vpDecThradConfig.push_back(pDecThreadConfig);
-        vWorkThreads.push_back( std::thread(DecodeThreadFunc,
-                                (void *)(pDecThreadConfig)
-                              ) );    
+
+        pthread_t threadid;
+        pthread_create(&threadid, NULL, DecodeThreadFunc, (void *)(pDecThreadConfig));
+
+        vDecThreads.push_back(threadid) ; 
+
+      //  vDecThreads.push_back( std::thread(DecodeThreadFunc,
+      //                          (void *)(pDecThreadConfig)
+      //                        ) );    
 
 
-        InferThreadConfig *pInferThreadConfig = new InferThreadConfig();
-        memset(pInferThreadConfig, 0, sizeof(InferThreadConfig));
-        pInferThreadConfig->totalDecNum            = (FLAGS_fr);///30)*pDecThreadConfig->nFPS;
-        pInferThreadConfig->pmfxVPP                = pmfxVPP;
-        pInferThreadConfig->nDecSurfNum            = nDecSurfNum ;
-        pInferThreadConfig->nVPP_In_SurfNum        = nVPP_In_SurfNum;
-        pInferThreadConfig->pmfxVPP_In_Surfaces    = pmfxVPP_In_Surfaces[nLoop];
-        pInferThreadConfig->pmfxVPP_Out_Surfaces   = pmfxVPP_Out_Surfaces[nLoop];
-        pInferThreadConfig->pmfxSession = &mfxSession[nLoop];
-        pInferThreadConfig->pVideoProcessINQ       = pVideoProcessINQ[nLoop];
-        pInferThreadConfig->pVideoProcessOutQ      = pVideoProcessOutQ[nLoop];
-        pInferThreadConfig->normalize_factor       = normalize_factor;
-        pInferThreadConfig->pmfxAllocator          = &mfxAllocator[nLoop];
-        pInferThreadConfig->pResizedFrame          = pResizedFrame;
-        pInferThreadConfig->gNet_input_width       = gNet_input_width[nLoop];
-        pInferThreadConfig->gNet_input_height      = gNet_input_height[nLoop];
-        pInferThreadConfig->pvideo                 = video[nLoop];
-        pInferThreadConfig->nChannel               = nLoop;
-        vpInferThreadConfig.push_back(pInferThreadConfig);
-        vWorkThreads.push_back(  std::thread(InferThreadFunc,
-                                 (void *)(pInferThreadConfig)
-                                ) );    
-       
+ #endif      
 
     }
+
+  // Initialize scheduler thread
+    {
+        sem_init(&gNewtaskAvaiable,0,0);
+        ScheduleThreadConfig *pScheduleThreadConfig = new ScheduleThreadConfig();
+        memset(pScheduleThreadConfig, 0, sizeof(pScheduleThreadConfig));
+        pScheduleThreadConfig->gNet_input_width       = gNet_input_width;
+        pScheduleThreadConfig->gNet_input_height      = gNet_input_height;
+        pScheduleThreadConfig->pvdpipe                = &vdpipe;
+        pScheduleThreadConfig->bTerminated            = false;
+
+        vpScheduleThreadConfig.push_back(pScheduleThreadConfig);
+
+        pthread_t threadid;
+        pthread_create(&threadid, NULL, ScheduleThreadFunc, (void *)(pScheduleThreadConfig));
+
+        vScheduleThreads.push_back(threadid) ; 
+
+   // vInferThreads.push_back(  std::thread(ScheduleThreadFunc,
+   //                          (void *)(pScheduleThreadConfig)
+   //                         ) );   
+    }
+    for(int nLoop=0; nLoop< NUM_OF_GPU_INFER; nLoop++)
+    {
+        InferThreadConfig *pInferThreadConfig = new InferThreadConfig();
+        memset(pInferThreadConfig, 0, sizeof(InferThreadConfig));
+        pInferThreadConfig->nChannel           = nLoop;// GPU instance ID;
+        pInferThreadConfig->bStartCount = true;
+        pInferThreadConfig->bTerminated = false;
+        pthread_t threadid;
+        vpInferThreadConfig.push_back(pInferThreadConfig);
+	    /*vInferThreads.push_back(  std::thread(InferThreadFunc,
+	                             (void *)(pInferThreadConfig)
+	                            ) );  */  
+        pthread_create(&threadid, NULL, InferThreadFunc, (void *)(pInferThreadConfig));	
+        vInferThreads.push_back(threadid) ; 
+    }
+  
+
+    while(true){
+        std::cout << "Enter q to quite: " ;
+        int c=getchar();
+        if (c=='q' || c=='Q'){
+            grunning=false;
+            break;
+	}
+    }
+    grunning=false;
+ 
+    
+    for(int nLoop=0; nLoop < NUM_OF_GPU_INFER; nLoop++){
+        sem_post(&gsemtInfer[nLoop]);
+    }    
+    sem_post(&gNewtaskAvaiable);
+    sem_post(&g_semtshow);
+    for(int nLoop=0; nLoop< FLAGS_c; nLoop++)
+    {
+        dpipe_stop(dpipe[nLoop]);
+    }
+    for (auto& th : vAssistThreads) {
+        pthread_join(th,NULL);
+    }
+
+    for (auto& th : vInferThreads) {
+        pthread_join(th,NULL);
+    }
+
+    for (auto& th : vScheduleThreads) {
+        pthread_join(th,NULL);
+    }
+
+    for (auto& th : vDecThreads) {
+        pthread_join(th,NULL);
+    }
+ 
+    std::cout<<" All thread is termined " <<std::endl;
     // Report performance counts
     {
-        std::chrono::high_resolution_clock::time_point staticsStart, staticsEnd;
+       //TODO: add summary
 
-        staticsStart = std::chrono::high_resolution_clock::now();
-        for (auto& decReport : vpDecThradConfig) {
-            decReport->bStartCount = true;
-        }
-
-
-        for (auto& th : vWorkThreads) {
-            th.join();
-        }
-
-        staticsEnd = std::chrono::high_resolution_clock::now();
-        int totalFrameProcessed = 0;
-        for (auto& decReport : vpDecThradConfig) {
-            totalFrameProcessed += decReport->nFrameProcessed;
-        }
-
-        chrono::duration<double> diffTime  = staticsEnd   - staticsStart;
-        double fps = (totalFrameProcessed*1000/(diffTime.count()*1000.0));
-        std::cout<< "TotalFames Processed:" << totalFrameProcessed <<" total latency:" << diffTime.count()*1000.0<<"ms"<<std::endl;
-        std::cout<< "FPS:" << fps <<"(f/s)"<<std::endl;
     }
 
 exit_here:
@@ -1131,13 +1562,18 @@ exit_here:
         MSDK_SAFE_DELETE_ARRAY(pmfxVPP_In_Surfaces[nLoop]);
         MSDK_SAFE_DELETE_ARRAY(pmfxVPP_Out_Surfaces[nLoop]);
         MSDK_SAFE_DELETE_ARRAY(mfxBS[nLoop].Data);
-
-        MSDK_SAFE_DELETE_ARRAY(g_resized[nLoop]);
-
     }
 
-    for (auto& inferConfig : vpInferThreadConfig) {
-         free(inferConfig->pResizedFrame);
+    sem_destroy(&g_semtshow);
+    sem_destroy(&gNewtaskAvaiable);
+    for(int nLoop=0; nLoop < NUM_OF_GPU_INFER; nLoop++){
+        sem_destroy(&gsemtInfer[nLoop]);
+        pthread_mutex_destroy(&mutexinfer[nLoop]);  
+    }    
+    pthread_mutex_destroy(&mutexshow);  
+    for(int nLoop=0; nLoop< FLAGS_c; nLoop++)
+    {
+        dpipe_destroy(dpipe[nLoop]);
     }
  
     std::cout << "> Complete execution !";
@@ -1153,20 +1589,17 @@ void App_ShowUsage()
 {
     std::cout << std::endl;
     std::cout << "[usage]" << std::endl;
-    std::cout << "\ttutorial_4_vmem [option]" << std::endl;
+    std::cout << "\video_analytics_example [option]" << std::endl;
     std::cout << "\toptions:" << std::endl;
     std::cout << std::endl;
     std::cout << "\t\t-h           " << help_message << std::endl;
-    std::cout << "\t\t-i <path>    " << image_message << std::endl;
-    std::cout << "\t\t-fr <path>   " << frames_message << std::endl;
     std::cout << "\t\t-m <path>    " << model_message << std::endl;
     std::cout << "\t\t-l <path>    " << labels_message << std::endl;
     std::cout << "\t\t-d <device>  " << target_device_message << std::endl;
-    std::cout << "\t\t-t <type>    " << infer_type_message << std::endl;
-    std::cout << "\t\t-pc          " << performance_counter_message << std::endl;
-    std::cout << "\t\t-thresh <val>" << threshold_message << std::endl;
-    std::cout << "\t\t-b <val>     " << batch_message << std::endl;
-    std::cout << "\t\t-v           " << verbose_message << std::endl << std::endl;
+    std::cout << "\t\t-c <steams>    " << channels_message << std::endl;
+    std::cout << "\t\t-show <steams>    " << show_message << std::endl;
+    std::cout << "\t\t-batch <val>     " << batch_message << std::endl;
+  
 }
 
 
@@ -1178,9 +1611,6 @@ mfxStatus WriteRawFrameToMemory(mfxFrameSurface1* pSurface, int dest_w, int dest
     mfxStatus sts = MFX_ERR_NONE;
     mfxU32 iYsize, ipos;
 
-    chrono::high_resolution_clock::time_point time11,time21;
-    std::chrono::duration<double> diff1;
-    time11 = std::chrono::high_resolution_clock::now();
 
     if(fourCC == MFX_FOURCC_RGBP)
     {
@@ -1269,10 +1699,6 @@ mfxStatus WriteRawFrameToMemory(mfxFrameSurface1* pSurface, int dest_w, int dest
 
 
     }
-    time21 = std::chrono::high_resolution_clock::now();
-    diff1 = time21-time11;		  
-     
-    std::cout<<"\t CPU Copy from GPU memory to system memory:"<< diff1.count()*1000.0 << "ms/frame\t"<<std::endl;
 
     return sts;
 }
@@ -1297,232 +1723,4 @@ cv::Mat createMat(unsigned char *rawData, unsigned int dimX, unsigned int dimY)
     return outputMat;
 }
 
-bool PrepareData(int nChannelID, mfxFrameSurface1* pSurface, mfxU32 fourCC, mfxU16 w_ie, mfxU16 h_ie, float normalizefactor, size_t *m, int *batchindex)
-{
-    static size_t frameNo =0; 
-    mfxFrameInfo* pInfo = &pSurface->Info;
-    mfxFrameData* pData = &pSurface->Data;
-    mfxU32 i, j, h, w;
-    mfxStatus sts = MFX_ERR_NONE;
-    mfxU32 iYsize, ipos;
 
-    chrono::high_resolution_clock::time_point time11,time21;
-    std::chrono::duration<double> diff1;
-    time11 = std::chrono::high_resolution_clock::now();
-    // batching
-    if(*m < g_batchSize)
-    {
-        g_pIE[nChannelID]->PreAllocateInputBuffer(*m);
-
-        // storing frames
-        g_pIE[nChannelID]->AllocteInputData3(pData->B, pData->G, pData->R, pData->Pitch, w_ie, h_ie,  normalizefactor);
-
-        time2 = std::chrono::high_resolution_clock::now();
-        diff = time2-time1;
-        pre_stagesum += diff.count()*1000.0;
-                
-        *m=((*m) +1);
-    }
-
-    *batchindex = *m;    // <-- return current batch position
-
-    return true;
-}
-
-
-bool IE_Execute_LowLatency(int nChannelID, size_t *m)
-{
-
-    static size_t frameNo =0;
-    bool bret;
-
-  
-    printf("Batch %d\n",nBatch);
-    
-    pre_stage_times.push_back(pre_stagesum/g_batchSize);
-
-    pre_stagesum = 0;
-            
-    //std::cout << "\t. Batching done, now start inferring." << std::endl;
-
-    *m = 0;  // <-- init m value.
-
-    // INFERENCING STAGE:        
-    time1 = std::chrono::high_resolution_clock::now();
-
-    bret = g_pIE[nChannelID]->Infer();
-    
-    time2 = std::chrono::high_resolution_clock::now();
-    diff = time2-time1;        
-    infer_times.push_back(diff.count()*1000.0/g_batchSize);
-
-    printf("\tinfer:\t\t%5.2f ms/frame\n", diff.count()*1000.0/g_batchSize);
-
-    if (bret == false)
-        return false;
-
-    // Read perfomance counters
-    if (FLAGS_pc)
-        g_pIE[nChannelID]->ReadPerformanceCounters();
-
-    g_pIE[nChannelID]->ReadyForOutputProcessing();
-    
-
-    return true;
-}
-
-bool IE_Execute(int nChannelID, mfxU16 w_ie, mfxU16 h_ie, float normalizefactor, unsigned char *pIE_InputFrame, int *batchindex)
-{
-    std::cout << "IE_Execute (" << w_ie << "x" << h_ie << ")" << std::endl;
-
-    static size_t m;
-    static size_t frameNo =0;
-    bool bret;
-
-    // batching
-    if(m < g_batchSize)
-    {
-        g_pIE[nChannelID]->PreAllocateInputBuffer(m);
-
-#if VERIFY_PURPOSE
-        chrono::high_resolution_clock::time_point time11,time21;
-        std::chrono::duration<double> diff1;
-        time11 = std::chrono::high_resolution_clock::now();
-
-        cv::Mat frame = createMat(pIE_InputFrame, w_ie, h_ie);
-        if (!frame.data)
-        {
-            std::cout << "\t\t. No more data" << std::endl;
-            return false;
-        }
-
-        time21 = std::chrono::high_resolution_clock::now();
-        diff1 = time21-time11;		  
-         
-        std::cout<<"\t SW CSC:"<< diff1.count()*1000.0 << "ms/frame\t"<<std::endl;
-
-        cv::imshow("rgb frame", frame );
-        cv::waitKey(0);
-
-        g_resized[nChannelID][m] = frame;
-#endif
-
-        // storing frames
-        g_pIE[nChannelID]->AllocteInputData2(pIE_InputFrame, normalizefactor);
-
-        time2 = std::chrono::high_resolution_clock::now();
-        diff = time2-time1;
-        pre_stagesum += diff.count()*1000.0;
-                
-        m++;
-    }
-
-    *batchindex = m;    // <-- return current batch position
-
-    if(m == g_batchSize)
-    {
-        printf("Batch %d\n",nBatch);
-        
-        pre_stage_times.push_back(pre_stagesum/g_batchSize);
-
-        pre_stagesum = 0;
-                
-        //std::cout << "\t. Batching done, now start inferring." << std::endl;
-
-        m = 0;  // <-- init m value.
-
-        // INFERENCING STAGE:        
-        time1 = std::chrono::high_resolution_clock::now();
-
-        bret = g_pIE[nChannelID]->Infer();
-        
-        time2 = std::chrono::high_resolution_clock::now();
-        diff = time2-time1;        
-        infer_times.push_back(diff.count()*1000.0/g_batchSize);
-
-        printf("\tinfer:\t\t%5.2f ms/frame\n", diff.count()*1000.0/g_batchSize);
-
-        if (bret == false)
-            return false;
-
-        // Read perfomance counters
-        if (FLAGS_pc)
-            g_pIE[nChannelID]->ReadPerformanceCounters();
-
-        g_pIE[nChannelID]->ReadyForOutputProcessing();
-
-#ifdef VERIFY_PURPOSE 
-        // Draw bounding box from result
-        IE_DrawBoundingBox(nChannelID);
-#endif
-    }
-
-    return true;
-}
-
-void IE_DrawBoundingBox(int nChannelID)
-{
-    time1 = std::chrono::high_resolution_clock::now();
-
-    for (size_t mb = 0; mb < g_batchSize; mb++)
-    {
-        g_pIE[nChannelID]->PreAllocateBoxBuffer(mb);
-
-        if (FLAGS_t.compare("SSD") == 0)    // SSD
-        {
-            std::vector<BB_INFO> rcBB = g_pIE[nChannelID]->DetectValidBoundingBox(FLAGS_t, FLAGS_thresh);
-
-            for (int i = 0; i < rcBB.size(); i++)
-                cv::rectangle(g_resized[nChannelID][mb], Point((int)rcBB[i].xmin, (int)rcBB[i].ymin),   Point((int)rcBB[i].xmax, (int)rcBB[i].ymax), Scalar(0, 55, 255), +1, 4);
-        }
-        else // YOLO-tiny
-        {
-            int idetectedobjcount = 0;
-
-            for (int c = 0; c < NUMLABELS; c++)
-            {
-                std::vector<BB_INFO> rcBB = g_pIE[nChannelID]->DetectValidBoundingBox(FLAGS_t, FLAGS_thresh, c);
-
-                for (int i = 0; i < rcBB.size(); i++)
-                {
-                    if (rcBB[i].prob <= 0)
-                        continue;
-
-                    if(FLAGS_v)
-                        std::cout << "\t  - Class: " << c << " (" << g_labels[c].c_str() << "), " << "boxes: " << rcBB.size() << std::endl;
-
-                    cv::rectangle(g_resized[nChannelID][mb], Point(rcBB[i].xmin, rcBB[i].ymin), Point(rcBB[i].xmax, rcBB[i].ymax), Scalar(0, 55, 255), +1, 4);
-
-                    idetectedobjcount++;
-                }
-            }
-
-            if(FLAGS_v)
-                std::cout << "\t. " << idetectedobjcount << " object(s) detected." << std::endl;
-        }
-    }
-
-    return;
-}
-
-void IE_SaveOutput(int nchannleID, bool bSingleImageMode, VideoWriter *vw)
-{	
-    for (int mb = 0; mb < g_batchSize; mb++)
-    {
-        if (bSingleImageMode)
-            imwrite("out.jpg", g_resized[nchannleID][mb]);
-        else{
-             vw->write(g_resized[nchannleID][mb]);
-
-        }
-    }
-
-    time2 = std::chrono::high_resolution_clock::now();
-    diff = time2-time1;
-    post_stage_times.push_back(diff.count()*1000.0/g_batchSize);
-    
-    printf("\tpost-stage:\t%5.2f ms/frame\n",diff.count()*1000.0/g_batchSize);
-    fflush(stdout);
-
-    nBatch++;
-}

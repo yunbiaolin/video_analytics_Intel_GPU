@@ -1,4 +1,0 @@
-cmake_minimum_required (VERSION 3.4)
-project (file_render)
-
-add_library(file_render STATIC file_render.cpp)

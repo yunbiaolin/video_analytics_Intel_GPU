@@ -34,6 +34,8 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/video/video.hpp>
 
+#include "dpipe.h"
+
 #define DEFAULT_PATH_P "./lib"
 #define NUMLABELS 20
 
@@ -76,6 +78,9 @@ static const char frames_message[] = "Number of frames from stream to process";
 static const char channels_message[] = "Number of channels of streams to process";
 /// @brief message for frame rate of inference
 static const char fps_message[] = "Number of frame rates of inference for each stream";
+/// @brief message for show result
+static const char show_message[] = "Show inference result in display GRID, maxium is 5 for now";
+
 
 /// @brief message for verbose
 static const char verbose_message[] = "Verbose";
@@ -84,10 +89,10 @@ static const char verbose_message[] = "Verbose";
 DEFINE_bool(h, false, help_message);
 /// \brief Define parameter for set video file <br>
 /// It is a required parameter
-DEFINE_string(i, "../../test_content/video/cars_1920x1080.h264", image_message);
+DEFINE_string(i, "../../test_content/video/0.h264", image_message);
 /// \brief Define parameter for set model file <br>
 /// It is a required parameter
-DEFINE_string(m, "../../test_content/IR/SSD/SSD_GoogleNet_v2_fp32.xml", model_message);
+DEFINE_string(m, "../../test_content/IR/SSD_mobilenet/MobileNetSSD_deploy.xml", model_message);
 /// \brief Define parameter for labels file <br>
 /// It is a required parameter
 DEFINE_string(l, "../../test_content/IR/SSD/pascal_voc_classes.txt", labels_message);
@@ -98,7 +103,7 @@ DEFINE_string(p, "", plugin_message);
 /// Default is ./lib
 DEFINE_string(pp, DEFAULT_PATH_P, plugin_path_message);
 /// \brief device the target device to infer on <br>
-DEFINE_string(d, "CPU", target_device_message);
+DEFINE_string(d, "GPU", target_device_message);
 /// \brief device the target device to infer on <br>
 DEFINE_string(t, "SSD", infer_type_message);
 /// \brief Enable per-layer performance report
@@ -106,17 +111,60 @@ DEFINE_bool(pc, false, performance_counter_message);
 /// \brief Enable per-layer performance report
 DEFINE_double(thresh, .8, threshold_message);
 /// \brief Batch size
-DEFINE_int32(batch, 1, batch_message);
+DEFINE_int32(batch, 6, batch_message);
 /// \brief Frames count
 DEFINE_int32(fr, 256, frames_message);
 /// \brief Channels of streams
 DEFINE_int32(c, 1, channels_message);
 /// \brief Frame rate of inference for each stream
 DEFINE_int32(fps, 30, fps_message);
+/// \brief Show final result
+DEFINE_bool(show, false, show_message);
+
 /// \brief Verbose
 DEFINE_bool(v, false, verbose_message);
 
 //temporary workaround for h264 encode outliers
 DEFINE_double(max_encode_ms, 40.0,NULL);
+
+#define	VIDEO_SOURCE_MAX_STRIDE  4
+
+ /**
+ * Data structure to store a video frame in RGBA or YUV420 format.
+ */
+typedef struct vsource_frame_s {
+    int channel;		/**< The channel id for the video frame */
+    int frameno;
+    long long imgpts;	/**< Captured time stamp
+                         * (or presentatin timestamp).
+                         * This is actually a sequence number of
+                         * captured video frame.  
+                          */
+    int linesize[VIDEO_SOURCE_MAX_STRIDE];	/**< strides
+                     for each video plane (YUV420P only). */
+    int realwidth;		/**< Actual width of the video frame */
+    int realheight;		/**< Actual height of the video frame */
+    int realstride;		/**< stride for RGBA and BGRA video frame */
+    int realsize;		/**< Total size of the video frame data */
+    struct timeval timestamp;	/**< Captured timestamp */
+    // internal data - should not change after initialized
+    int maxstride;		/**< */
+    int imgbufsize;		/**< Allocated video frame buffer size */
+    cv::Mat       cvImg;
+    unsigned char *imgbuf;	/**< Pointer to the video frame buffer */
+    unsigned char *imgbuf_internal;	/**< Internal pointer
+                 * for buffer allocation.
+                 * This is used to ensure that \a imgbuf
+                 * is started at an aligned address
+                 * XXX: NOT USED NOW. */
+    int alignment;		/**< \a imgbuf alignment value.
+                 * \a imgbuf = \a imgbuf_internal + \a alignment.
+                 * XXX: NOT USED NOW. */
+}vsource_frame_t;
+typedef struct __Infer_Task_s {
+    dpipe_t   *dpipe;
+    dpipe_buffer_t *dbuffer;
+    int       nChannelID;
+}infer_task_t;
 
 
