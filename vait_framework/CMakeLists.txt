@@ -1,0 +1,26 @@
+cmake_minimum_required (VERSION 3.4)
+set (CMAKE_CXX_STANDARD 11)
+find_package(OpenCV)
+MESSAGE( STATUS "DL_SDK_INCLUDE:         " $ENV{DL_SDK_INCLUDE} )
+MESSAGE( STATUS "OpenCV_INCLUDE_DIRS:    " ${OpenCV_INCLUDE_DIRS} )
+include_directories ($ENV{DL_SDK_INCLUDE} )
+include_directories (${OpenCV_INCLUDE_DIRS} )
+
+link_directories(/usr/local/lib $ENV{DL_SDK_LIB} ${OpenCV_INSTALL_PATH})
+
+#get_cmake_property(_variableNames VARIABLES)
+#foreach (_variableName ${_variableNames})
+#    message(STATUS "${_variableName}=${${_variableName}}")
+#endforeach()
+
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+add_subdirectory(workers/inference)
+add_subdirectory(workers/ocv_reader)
+add_subdirectory(workers/ocv_render)
+add_subdirectory(workers/file_render)
+add_subdirectory(samples/sample1_single)
+add_subdirectory(samples/sample2_multi)
+add_subdirectory(samples/test)
