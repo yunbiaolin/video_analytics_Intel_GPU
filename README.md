@@ -30,7 +30,7 @@
  * Intel MediaSDK - https://github.com/Intel-Media-SDK/MediaSDK.git
  * Intel Media Driver - https://github.com/intel/media-driver.git
  * Intel Computer Vision SDK - https://software.intel.com/en-us/openvino-toolkit/choose-download 
- * Intel OpenCL driver needs to be installed correctly - 
+ * Intel OpenCL driver needs to be installed correctly - https://github.com/intel/compute-runtime
 
 ## pre-requisites installation without Docker
 
