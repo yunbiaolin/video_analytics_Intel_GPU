@@ -866,7 +866,8 @@ void *InferThreadFunc(void *arg)
                     total_frame[pInferConfig->nChannel]++;	
                 }	
                 if( Detector::INSERTIMG_GET == faceret){
-                   if(pInferConfig->nChannel ==0){
+                   if(pInferConfig->nChannel ==0 ){
+                       if(FLAGS_show){
 		            pthread_mutex_lock(&mutexshow); 	
 		            gresultque.push(objects);
 		            pthread_mutex_unlock(&mutexshow); 	
@@ -878,12 +879,15 @@ void *InferThreadFunc(void *arg)
 		                usleep(1*1000); //sleep 2ms to recheck
 		                pthread_mutex_lock(&mutexshow); 
 		            }			
-		            pthread_mutex_unlock(&mutexshow); 
+		            pthread_mutex_unlock(&mutexshow);
+                        } 
                     }else{
+                        if(FLAGS_show){
 		            pthread_mutex_lock(&mutexshow); 	
 		            gresultque1.push(objects);
 		            pthread_mutex_unlock(&mutexshow); 	
 		            sem_post(&g_semtshow);
+                        }
 			/*		
 		            pthread_mutex_lock(&mutexshow); 
 		            while(gresultque1.size()>=2 && grunning){  //only cache 2 batch
