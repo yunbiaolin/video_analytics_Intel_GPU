@@ -82,6 +82,8 @@ using namespace std;
 #define MFX_FOURCC_RGBP  MFX_MAKEFOURCC('R','G','B','P')
 #endif
 
+//#define ENABLE_LP_RESIZE
+
 
 Detector gDetector[NUM_OF_GPU_INFER];
 sem_t gNewtaskAvaiable;
@@ -1167,7 +1169,12 @@ int main(int argc, char *argv[])
         // - In this example we are decoding an AVC (H.264) stream
         // - For simplistic memory management, system memory surfaces are used to store the decoded frames
         std::cout << "\t. Start preparing video parameters for decoding." << std::endl;
+        mfxExtDecVideoProcessing DecoderPostProcessing;
         mfxVideoParam DecParams;
+        bool VD_LP_resize = true;
+#ifdef ENABLE_LP_RESIZE
+        VD_LP_resize = true;
+#endif
         memset(&DecParams, 0, sizeof(DecParams));
 
         DecParams.mfx.CodecId = MFX_CODEC_AVC;                  // h264
@@ -1211,7 +1218,8 @@ int main(int argc, char *argv[])
         memset(&scalingConfig, 0, sizeof(mfxExtVPPScaling));
 
         mfxExtBuffer *pExtBuf[1];
-        VPPParams.ExtParam = (mfxExtBuffer **)pExtBuf; 
+        mfxExtBuffer *pExtBufDec[1];
+        VPPParams.ExtParam = (mfxExtBuffer **)pExtBuf;
         scalingConfig.Header.BufferId    = MFX_EXTBUFF_VPP_SCALING;
         scalingConfig.Header.BufferSz    = sizeof(mfxExtVPPScaling);
         scalingConfig.ScalingMode        = MFX_SCALING_MODE_LOWPOWER;
@@ -1259,6 +1267,45 @@ int main(int argc, char *argv[])
 
         std::cout << "\t. Done preparing VPP In/ Out parameters." << std::endl;
 
+        /* LP size */
+        if (VD_LP_resize)
+        {
+            if ( (MFX_CODEC_AVC == DecParams.mfx.CodecId) && /* Only for AVC */
+                 (MFX_PICSTRUCT_PROGRESSIVE == DecParams.mfx.FrameInfo.PicStruct)) /* ...And only for progressive!*/
+            {   /* it is possible to use decoder's post-processing */
+                DecoderPostProcessing.Header.BufferId    = MFX_EXTBUFF_DEC_VIDEO_PROCESSING;
+                DecoderPostProcessing.Header.BufferSz    = sizeof(mfxExtDecVideoProcessing);
+                DecoderPostProcessing.In.CropX = 0;
+                DecoderPostProcessing.In.CropY = 0;
+                DecoderPostProcessing.In.CropW = DecParams.mfx.FrameInfo.CropW;
+                DecoderPostProcessing.In.CropH = DecParams.mfx.FrameInfo.CropH;
+
+                DecoderPostProcessing.Out.FourCC = DecParams.mfx.FrameInfo.FourCC;
+                DecoderPostProcessing.Out.ChromaFormat = DecParams.mfx.FrameInfo.ChromaFormat;
+                DecoderPostProcessing.Out.Width = MSDK_ALIGN16(VPPParams.vpp.Out.Width);
+                DecoderPostProcessing.Out.Height = MSDK_ALIGN16(VPPParams.vpp.Out.Height);
+                DecoderPostProcessing.Out.CropX = 0;
+                DecoderPostProcessing.Out.CropY = 0;
+                DecoderPostProcessing.Out.CropW = VPPParams.vpp.Out.CropW;
+                DecoderPostProcessing.Out.CropH = VPPParams.vpp.Out.CropH;
+
+                //DecParams.ExtParam = reinterpret_cast<mfxExtBuffer**>(&DecoderPostProcessing);
+                DecParams.ExtParam = (mfxExtBuffer **)pExtBufDec;
+                DecParams.ExtParam[0] = (mfxExtBuffer*)&(DecoderPostProcessing);
+                DecParams.NumExtParam = 1;
+                std::cout << "\t.Decoder's post-processing is used for resizing\n"<< std::endl;
+
+                /* need to correct VPP params: re-size done after decoding
+                 * So, VPP for CSC NV12->RGBP only */
+                VPPParams.vpp.In.Width = DecoderPostProcessing.Out.Width;
+                VPPParams.vpp.In.Height = DecoderPostProcessing.Out.Height;
+                VPPParams.vpp.In.CropW = VPPParams.vpp.Out.CropW;
+                VPPParams.vpp.In.CropH = VPPParams.vpp.Out.CropH;
+                /* scaling is off */
+                VPPParams.NumExtParam = 0;
+                VPPParams.ExtParam = NULL;
+            }
+        }
         // [DECODER]
         // Query number of required surfaces
         std::cout << "\t. Query number of required surfaces for decoder and memory allocation." << std::endl;
@@ -1392,7 +1439,6 @@ int main(int argc, char *argv[])
 
         // Initialize the Media SDK decoder
         std::cout << "\t. Init Intel Media SDK Decoder" << std::endl;
-
 
         sts = pmfxDEC->Init(&DecParams);
         MSDK_IGNORE_MFX_STS(sts, MFX_WRN_PARTIAL_ACCELERATION);

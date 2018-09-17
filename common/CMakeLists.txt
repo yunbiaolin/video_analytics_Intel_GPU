@@ -63,7 +63,7 @@ elseif(Linux)
 
   message(STATUS "OS is Linux")
 
-  set(MFX_INCLUDE $ENV{MFX_HOME}/include/mfx)
+  set(MFX_INCLUDE $ENV{MFX_HOME}/include)
 
   file(GLOB MAIN_SRC common_utils.cpp common_utils_linux.cpp common_vaapi.cpp)
   file(GLOB LIBRARY_HEADERS common_utils.h common_vaapi.h bits/linux_defs.h)
