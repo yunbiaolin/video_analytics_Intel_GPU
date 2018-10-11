@@ -160,7 +160,7 @@ void Detector::CreateMean() {
 /*
 	InsertImage will fill a blob until blob full, if full return the blob point
 */
-Detector::InsertImgStatus Detector::InsertImage(const cv::Mat& orgimg, vector<DetctorResult>& objects, int inputid, int frameno) {
+Detector::InsertImgStatus Detector::InsertImage(const cv::Mat& orgimg, vector<DetctorResult>& objects, int inputid, int frameno, int channelid) {
 	InsertImgStatus retvalue=INSERTIMG_INSERTED;
 	if(orgimg.cols==0 || orgimg.rows==0 ||!bLoad)
 		return INSERTIMG_NULL;
@@ -171,7 +171,8 @@ Detector::InsertImgStatus Detector::InsertImage(const cv::Mat& orgimg, vector<De
 	is.isize = orgimg.size();
 	is.inputid = inputid;
 	is.orgimg = orgimg;
-        is.frameno = frameno;
+    is.frameno = frameno;
+    is.channelid = channelid;
 	imginfoque_.push(is);
         // No need to process it due to VPP output is already scaled.
 	//cv::Mat img = PreProcess(orgimg);		
@@ -196,7 +197,8 @@ Detector::InsertImgStatus Detector::InsertImage(const cv::Mat& orgimg, vector<De
 					objects[i].imgsize = imginfoque_.front().isize;
 					objects[i].inputid = imginfoque_.front().inputid;
 					objects[i].orgimg  = imginfoque_.front().orgimg;
-                                        objects[i].frameno = imginfoque_.front().frameno;
+                    objects[i].frameno = imginfoque_.front().frameno;
+				    objects[i].channelid = imginfoque_.front().channelid;
 					imginfoque_.pop();
 					objects[i].boxs.clear();
 				}

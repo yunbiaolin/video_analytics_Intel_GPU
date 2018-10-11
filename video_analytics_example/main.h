@@ -68,6 +68,10 @@ static const char target_device_message[] = "Infer target device (CPU or GPU)";
 static const char infer_type_message[] = "Infer type (SSD, YOLO, YOLO-tiny)";
 /// @brief message for performance counters
 static const char performance_counter_message[] = "Enables per-layer performance report";
+/// @brief message for performance inference
+static const char performance_inference_message[] = "Enables inference performance report";
+/// @brief message for performance decode
+static const char performance_decode_message[] = "Enables decode performance report";
 /// @brief message for performance counters
 static const char threshold_message[] = "confidence threshold for bounding boxes 0-1";
 /// @brief message for batch size
@@ -80,6 +84,14 @@ static const char channels_message[] = "Number of channels of streams to process
 static const char fps_message[] = "Number of frame rates of inference for each stream";
 /// @brief message for show result
 static const char show_message[] = "Show inference result in display GRID, maxium is 5 for now";
+/// @brief message for show result
+static const char dec_postproc_message[] = "VDBOX+SFC case: resize after decoder using direct pipe. Default - auto; use off option to do separate dec+vpp";
+/// @brief message for decode 
+static const char decode_message[] = "enable decode (true/false). Default - enable";
+/// @brief message for inference
+static const char inference_message[] = "enable inference (1/0). Default - enable";
+/// @brief message for performance details
+static const char perf_details_message[] = "enable performance details. Default - disable";
 
 
 /// @brief message for verbose
@@ -106,12 +118,14 @@ DEFINE_string(pp, DEFAULT_PATH_P, plugin_path_message);
 DEFINE_string(d, "GPU", target_device_message);
 /// \brief device the target device to infer on <br>
 DEFINE_string(t, "SSD", infer_type_message);
+/// \brief resize after decoder using direct pipe
+DEFINE_string(dec_postproc, "off", dec_postproc_message);
 /// \brief Enable per-layer performance report
 DEFINE_bool(pc, false, performance_counter_message);
 /// \brief Enable per-layer performance report
 DEFINE_double(thresh, .8, threshold_message);
 /// \brief Batch size
-DEFINE_int32(batch, 6, batch_message);
+DEFINE_int32(batch, 1, batch_message);
 /// \brief Frames count
 DEFINE_int32(fr, 256, frames_message);
 /// \brief Channels of streams
@@ -120,6 +134,14 @@ DEFINE_int32(c, 1, channels_message);
 DEFINE_int32(fps, 30, fps_message);
 /// \brief Show final result
 DEFINE_bool(show, false, show_message);
+/// \brief Enable inference performance
+DEFINE_bool(pi, false, performance_inference_message);
+/// \brief Enable decode performance
+DEFINE_bool(pd, false, performance_decode_message);
+/// \brief Enable inference
+DEFINE_int32(infer, 1, inference_message);
+/// \brief Enable inference perf details
+DEFINE_bool(pv, false, perf_details_message);
 
 /// \brief Verbose
 DEFINE_bool(v, false, verbose_message);
@@ -128,14 +150,19 @@ DEFINE_bool(v, false, verbose_message);
 DEFINE_double(max_encode_ms, 40.0,NULL);
 
 #define	VIDEO_SOURCE_MAX_STRIDE  4
+#include <mfxvideo++.h>
+#include <mfxstructures.h>
 
  /**
  * Data structure to store a video frame in RGBA or YUV420 format.
  */
 typedef struct vsource_frame_s {
-    int channel;		/**< The channel id for the video frame */
-    int frameno;
-    long long imgpts;	/**< Captured time stamp
+    int  channel;		/**< The channel id for the video frame */
+    int  frameno;
+	mfxFrameSurface1* pmfxSurface;
+    long long imgpts;
+	bool bROIRrefresh;       /**< key frame wehther it is a ROI update requried.*/
+  	/**< Captured time stamp
                          * (or presentatin timestamp).
                          * This is actually a sequence number of
                          * captured video frame.  

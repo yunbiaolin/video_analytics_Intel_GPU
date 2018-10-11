@@ -195,6 +195,8 @@ void XCBShow::create_win(int id){
      std::cout << "creae_win success"<< std::endl;
 }
 
+uint8_t* pARGB = NULL;
+uint8_t* pYUY2 = NULL;
 void XCBShow::imshow(int id,cv::Mat const &img) {
 	if(id>=SDLSHOW_MAXID||!binit){
         std::cout << "imshow called: not initialized, return immediately"<<"\n";
@@ -211,12 +213,16 @@ void XCBShow::imshow(int id,cv::Mat const &img) {
          }
 	}
 	
+
 	//display data
-	int width = img.size().width;
-	int height = img.size().height;
-	uint8* pARGB = new uint8[width*height*4];
-	uint8* pYUY2 = new uint8[width*height*2];
-  
+	int width    = img.size().width;
+	int height   = img.size().height;
+    if( NULL == pARGB)
+	{
+	    pARGB = new uint8_t[width*height*4];
+	    pYUY2 = new uint8_t[width*height*2];
+    }
+ 
 	libyuv::RGB24ToARGB(img.data,width*3,
 										pARGB,width*4,
 										width,height
@@ -226,16 +232,15 @@ void XCBShow::imshow(int id,cv::Mat const &img) {
 										pYUY2,width*2,
 										width,height
 	);	
-	delete pARGB;
-	
+
 	xcb_void_cookie_t ck;
 
  	ck=xcb_xv_put_image_checked(_xcbwins[id].conn, fport, _xcbwins[id].window,
-										_xcbwins[id].gc, fid,
-										0, 0, width,height,
-										0, 0, width, height,
-										width,height,
-										width*height*2, pYUY2);
+				    _xcbwins[id].gc, fid,
+				    0, 0, width, height,
+				    0, 0, width, height,
+				    width,height,
+				    width*height*2, pYUY2);
 	/* Wait for reply. See x11.c for rationale. */
 	xcb_generic_error_t *e = xcb_request_check (_xcbwins[id].conn, ck);
 	if (e != NULL)
@@ -243,6 +248,5 @@ void XCBShow::imshow(int id,cv::Mat const &img) {
 		std::cout <<  e->error_code <<"\n";
 		free (e);
 	}					
- 	delete pYUY2;
 }
 
