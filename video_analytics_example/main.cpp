@@ -51,10 +51,18 @@
 #include "XCBShow.hpp"
 #include "detector.hpp"
 
+
+// =================================================================
+// KCF tracker Interface
+// =================================================================
+
+#include "kcftracker.hpp"
+
+
 using namespace cv;
 using namespace std;
 
-
+//#define TEST_KCF_TRACK_WITH_GPU 
 #define NUM_OF_CHANNELS 48   // Maximum supported decoding and video processing 
 
 // Inference Device 
@@ -82,21 +90,31 @@ using namespace std;
 #define MFX_FOURCC_RGBP  MFX_MAKEFOURCC('R','G','B','P')
 #endif
 
-//#define ENABLE_LP_RESIZE
-
 
 Detector gDetector[NUM_OF_GPU_INFER];
 sem_t gNewtaskAvaiable;
+
+#ifdef TEST_KCF_TRACK_WITH_GPU
+sem_t gNewTrackTaskAvaiable[NUM_OF_CHANNELS];
+sem_t gDetectResultAvaiable[NUM_OF_CHANNELS];
+#endif
+
 sem_t             gsemtInfer[NUM_OF_GPU_INFER];
 queue<infer_task_t> gtaskque[NUM_OF_GPU_INFER];
 pthread_mutex_t   mutexinfer[NUM_OF_GPU_INFER]; 
 
 // Display
+#ifdef TEST_KCF_TRACK_WITH_GPU
+#define INPUTNUM 1
+queue<Detector::DetctorResult > gDetectResultque[NUM_OF_CHANNELS]; // Queue of the inference output
+#else
 #define INPUTNUM 6
+#endif
 pthread_mutex_t mutexshow ;    // Mutex of the dislay queue
 sem_t           g_semtshow;    // Notify the display thread to show                     
 queue<vector<Detector::DetctorResult> > gresultque; // Queue of the inference output
 queue<vector<Detector::DetctorResult> > gresultque1; // Queue of the inference output
+
 
 int grunning = true;
 //Infernece information
@@ -106,9 +124,9 @@ int gNet_input_height;
 int total_frame[3] ={0};
 int each_frame[INPUTNUM];
 static string  CLASSES[] = {"background",
-           "face", "bicycle", "bird", "boat",
-           "!bottle", "!bus", "car", "cat", "chair",
-           "cow", "diningtable", "dog", "horse",
+           "face", "!bicycle", "bird", "boat",
+           "!bottle", "!bus", "car", "cat", "!chair",
+           "cow", "!diningtable", "dog", "horse",
            "motorbike", "person", "!pottedplant",
            "sheep", "sofa", "!train", "!tvmonitor"};
 // Performance information
@@ -212,8 +230,8 @@ void *DisplayThreadFunc(void *arg)
                     ss << CLASSES[(int)(objects[k].boxs[i].classid)] << "/" << objects[k].boxs[i].confidence;  
                     std::string  text = ss.str();  
                     cv::putText(objects[k].orgimg, text, cvPoint(objects[k].boxs[i].left,objects[k].boxs[i].top+20), cv::FONT_HERSHEY_PLAIN, 1.0f, cv::Scalar(0, 255, 255));  	
-		}
-                {		
+                }
+                {
                     if(fpshaswrite[objects[k].inputid]==0)
                     {
                         //if(objects[k].frameno > eachscreen_display_order[objects[k].inputid]){
@@ -224,6 +242,7 @@ void *DisplayThreadFunc(void *arg)
                     } 	
                 }
             }
+	        #ifndef TEST_KCF_TRACK_WITH_GPU
             if(!gresultque1.empty()){
                 Detector::DetctorResult tempObj;
                 pthread_mutex_lock(&mutexshow); 	
@@ -263,6 +282,7 @@ void *DisplayThreadFunc(void *arg)
                 cv::putText(frame, text, cvPoint(0,20), cv::FONT_HERSHEY_PLAIN, 1.0f, cv::Scalar(127, 255, 0));  
                 frame.copyTo(eachscreen[INPUTNUM-1]);		
             }
+		#endif
             XCBShow::Instance().imshow(0,onescreen);
 	
         } // wait for display		
@@ -297,6 +317,7 @@ public:
     bool bStartCount;
     int nFrameProcessed;
     dpipe_t *dpipe;
+	dpipe_t *dKCFpipe; // Pipe between decoding and track thread
 
     std::chrono::high_resolution_clock::time_point tmStart;
     std::chrono::high_resolution_clock::time_point tmEnd;
@@ -350,10 +371,14 @@ void *DecodeThreadFunc(void *arg)
         }
         if (MFX_ERR_MORE_SURFACE == sts || MFX_ERR_NONE == sts)
         {
+recheck21:
+
             nIndexDec =GetFreeSurfaceIndex(pDecConfig->pmfxDecSurfaces, pDecConfig->nDecSurfNum);
             if(nIndexDec == MFX_ERR_NOT_FOUND){
-                 std::cout << std::endl<< ">channel("<<pDecConfig->nChannel<<") >> Not able to find an avaialbe decoding recon surface" << std::endl;
-            }
+               //std::cout << std::endl<< ">channel("<<pDecConfig->nChannel<<") >> Not able to find an avaialbe decoding recon surface" << std::endl;
+               usleep(10000);
+			   goto recheck21;
+			}
         }
 
         if(bNeedMore == false)
@@ -399,9 +424,43 @@ recheck:
             pDecConfig->nFrameProcessed ++;
             //}
 
-            nFrame++;
-            if (1) //(nFrame % pDecConfig->nFPS) == 0) 
+          
+#ifdef TEST_KCF_TRACK_WITH_GPU		
+			dpipe_buffer_t	*srcTrackData  = NULL;
+		    vsource_frame_t *srcTrackFrame = NULL;
+            // Get a decode frame from the decoding thread
+		    srcTrackData = dpipe_get(pDecConfig->dKCFpipe);
+            if(srcTrackData == NULL)
+			    break;
+			//std::cout<<"finish decoding "<<nFrame<<std::endl;
+		    srcTrackFrame = (vsource_frame_t*) srcTrackData->pointer;
+			if ((nFrame % 6) == 0) 
+			{
+				//std::cout<<"it is a Key frame, needs to do detection "<<nFrame<<std::endl;
+			    srcTrackFrame->bROIRrefresh = true;
+			}else{
+			    //std::cout<<"Not a key frame, just do a tracking "<<nFrame<<std::endl;
+				srcTrackFrame->bROIRrefresh = false;
+			}
+
+		    mfxFrameSurface1* pSurface = pDecConfig->pmfxVPP_In_Surfaces[nIndexVPP_In];
+			pSurface->Data.Locked +=1;				 
+            srcTrackFrame->pmfxSurface = pSurface;
+			//std::cout<<"	  Push frame into tracking thread: "<<pSurface<<std::endl; 
+
+		    dpipe_store(pDecConfig->dKCFpipe, srcTrackData);
+           
+            sem_post(&gNewTrackTaskAvaiable[pDecConfig->nChannel]);
+#endif
+
+#ifdef TEST_KCF_TRACK_WITH_GPU	
+            if ((nFrame % 6) == 0)
+#endif
             {
+               //std::cout <<" send to inference workload" << std::endl;
+#ifdef TEST_KCF_TRACK_WITH_GPU				   
+               usleep(30000); 
+#endif
 recheck2:
                nIndexVPP_Out = GetFreeSurfaceIndex(pDecConfig->pmfxVPP_Out_Surfaces, pDecConfig->nVPP_Out_SurfNum); // Find free frame surface
 
@@ -430,7 +489,7 @@ recheck2:
                        break;
                    }
                    else{
-		       break; // not a warning
+                       break; // not a warning
                    }
                  }
 
@@ -464,6 +523,8 @@ recheck2:
                     srcframe->channel  = pDecConfig->nChannel;
                     srcframe->frameno  = pDecConfig->nFrameProcessed;
                     mfxU32 i, j, h, w;
+
+					
                     mfxFrameSurface1* pSurface = pDecConfig->pmfxVPP_Out_Surfaces[nIndexVPP_Out];
 
                     pDecConfig->pmfxAllocator->Lock(pDecConfig->pmfxAllocator->pthis, 
@@ -472,7 +533,7 @@ recheck2:
                     mfxFrameInfo* pInfo = &pSurface->Info;
                     mfxFrameData* pData = &pSurface->Data;
                            
-                  #if 1
+                  #ifndef TEST_KCF_TRACK_WITH_GPU	
 
                     mfxU8* ptr;
                     if (pInfo->CropH > 0 && pInfo->CropW > 0)
@@ -526,9 +587,17 @@ recheck2:
 
                     ptr = MSDK_MIN( MSDK_MIN(pData->R, pData->G), pData->B);
                     ptr = ptr + pInfo->CropX + pInfo->CropY * pData->Pitch;
-
-                    for(i = 0; i <h; i++)
-                        memcpy(temp_img_buffer + i*w*4, ptr + i * pData->Pitch, w*4);
+                    mfxU8 *pTemp = srcframe->imgbuf;
+                    mfxU8  *ptrB   = pTemp;
+                    mfxU8  *ptrG   = pTemp + w*h;
+                    mfxU8  *ptrR   = pTemp + 2*w*h;
+                    for(int i = 0; i < h; i++)
+                    for (int j = 0; j < w; j++)
+                    {
+                        ptrB[i*w + j] =  ptr[i*pData->Pitch + j*4 +0];
+                        ptrG[i*w + j] =  ptr[i*pData->Pitch + j*4 +1];
+                        ptrR[i*w + j] =  ptr[i*pData->Pitch + j*4 +2];
+                    }
                  #endif
                     // basic info
                     srcframe->imgpts     = srcframe->imgpts;
@@ -554,7 +623,9 @@ recheck2:
                     sem_post(&gNewtaskAvaiable);
 
                 }//if(sts==)
-            }//for(;;)
+                
+            }//for(;;) 
+            nFrame++;
         }    
     }
 
@@ -570,6 +641,252 @@ recheck2:
     return (void *)0;
 
 }
+
+
+struct TrackerThreadConfig
+{
+public:
+    TrackerThreadConfig()
+    {
+    };
+    int totalDecNum;
+    MFXVideoDECODE     *pmfxDEC;
+    mfxU16             nDecSurfNum;
+    mfxU16             nVPP_In_SurfNum;
+    mfxU16             nVPP_Out_SurfNum;
+    mfxBitstream *pmfxBS;
+    mfxFrameSurface1** pmfxDecSurfaces;
+    mfxFrameSurface1** pmfxVPP_In_Surfaces;
+    mfxFrameSurface1** pmfxVPP_Out_Surfaces;
+    MFXVideoSession *  pmfxSession;
+    mfxFrameAllocator *pmfxAllocator;
+    MFXVideoVPP       *pmfxVPP;
+    int width;
+    int height;
+    int nChannel;
+    dpipe_t *dpipe;
+};
+
+#ifdef TEST_KCF_TRACK_WITH_GPU
+#define MAX_NUM_TRACK_OBJECT 20
+// ================= Decoding Thread =======
+void *TrackerThreadFunc(void *arg)
+{
+    struct TrackerThreadConfig *pTrackerConfig = NULL;
+    int nFrame = 0;
+    mfxStatus sts = MFX_ERR_NONE;
+    int  rawWidth;
+    int  rawHeight; 
+    std::chrono::high_resolution_clock::time_point tmStart;
+    std::chrono::high_resolution_clock::time_point tmEnd;
+    chrono::duration<double> diffTime;
+
+    pTrackerConfig= (TrackerThreadConfig *) arg;
+    if( NULL == pTrackerConfig)
+    {
+        std::cout << std::endl << "Failed Tracker Thread Configuration" << std::endl;
+        return NULL;
+    }
+    std::cout << std::endl <<">channel("<<pTrackerConfig->nChannel<<") Initialized " << std::endl;
+
+    bool skiptrack = false;
+    String tracker_algorithm = "HOG";
+    bool HOG         = true;
+    bool FIXEDWINDOW = false;
+    bool MULTISCALE  =  false;
+    bool SILENT      = true;
+    bool LAB         = false;
+
+    rawWidth  = pTrackerConfig->width;
+    rawHeight = pTrackerConfig->height;
+
+    unsigned char* dest = (unsigned char *)malloc(rawWidth*rawHeight*3/2);
+    memset(dest, 0, rawWidth*rawHeight*3/2);
+
+     // Create KCFTracker object
+     // Limit maximum 20 objects in a single frames
+     KCFTracker ptracker[20];
+     Detector::resultbox objectResult[20];
+
+    for(int nloop=0; nloop<MAX_NUM_TRACK_OBJECT; nloop++)
+    {
+        ptracker[nloop] = new KCFTracker(HOG, FIXEDWINDOW, MULTISCALE, LAB);
+    }
+    int nCurTrackObjects = MAX_NUM_TRACK_OBJECT;
+    int classid[MAX_NUM_TRACK_OBJECT] = {0};
+    float confidence[MAX_NUM_TRACK_OBJECT] = {0.0f};
+    while (grunning)
+    {
+        // wake-up when a new task avaiable
+        std::cout << std::endl <<"waiting for a new tracker workload ready...." << std::endl;
+        sem_wait(&gNewTrackTaskAvaiable[pTrackerConfig->nChannel]);
+        std::cout << std::endl <<"Found a new tracker workload avaiable" << std::endl;
+
+        for(;;)
+        {
+            dpipe_buffer_t  *srcdata   = NULL;
+            vsource_frame_t *srcframe  = NULL;
+            vector<Detector::DetctorResult> objects;
+            srcdata = dpipe_load(pTrackerConfig->dpipe, NULL);
+            if( srcdata == NULL ) {
+                std::cout << std::endl <<" no more frames on the track queeu" << std::endl;
+                break;
+            }
+            srcframe = (vsource_frame_t*) srcdata->pointer;
+            mfxFrameSurface1* pSurface = srcframe->pmfxSurface;
+            mfxHDL handle;
+            pTrackerConfig->pmfxAllocator->GetHDL(pTrackerConfig->pmfxAllocator->pthis, 
+                                                      pSurface->Data.MemId, 
+                                                      &(handle));
+
+            //std::cout << std::endl <<"VASurfaceID ****: "<< *((unsigned int *)handle) << std::endl;
+            Rect2d result[MAX_NUM_TRACK_OBJECT];
+            if(srcframe->bROIRrefresh == true)
+            {
+                // ROI refresh is required, needs to wait for the new inference result
+                // sem_wait();
+                std::cout << std::endl <<"It is a key frame, need to wait for detection result " << std::endl;
+                sem_wait(&gDetectResultAvaiable[pTrackerConfig->nChannel]);
+                Detector::DetctorResult object;
+                if(!gDetectResultque[pTrackerConfig->nChannel].empty()){
+                    object = gDetectResultque[pTrackerConfig->nChannel].front();
+                    gDetectResultque[pTrackerConfig->nChannel].pop();
+                    nCurTrackObjects = (object.boxs.size() >  MAX_NUM_TRACK_OBJECT? MAX_NUM_TRACK_OBJECT:object.boxs.size());
+                    std::cout << std::endl <<"Detection  result is ready: object.boxs.size()= " <<object.boxs.size()<< std::endl;
+                    for(int i=0; i< nCurTrackObjects; i++)
+                    {
+             
+                        if(CLASSES[(int)(object.boxs[i].classid)][0]=='!')
+                            continue;
+                        //std::cout<<"bounding box: x="<< object.boxs[0].left<< " y="<< object.boxs[0].right << " top="<<object.boxs[0].top<< "boottm="<<object.boxs[0].bottom <<std::endl;
+                    }
+                    tmStart = std::chrono::high_resolution_clock::now();
+                    if( nCurTrackObjects == 0 /*&& object.boxs.size()>20*/){
+                       skiptrack = true;
+                       //std::cout << std::endl <<"no key object found, try to skip Key frame:: "<< pSurface << std::endl;
+                    }else
+                    {
+                        for(int nloop=0; nloop< nCurTrackObjects; nloop++)
+                        {
+                            Rect2d boundingBox;
+                            float Hfactor = rawWidth/304.0f;
+                            float Vfactor = rawHeight/304.0f ;
+                            boundingBox.x = object.boxs[nloop].left*Hfactor;
+                            boundingBox.y = object.boxs[nloop].top*Vfactor;
+                            boundingBox.width  = (object.boxs[nloop].right  - object.boxs[nloop].left)*Hfactor;
+                            boundingBox.height = (object.boxs[nloop].bottom - object.boxs[nloop].top)*Vfactor;
+                            confidence[nloop] = object.boxs[nloop].confidence;
+                            classid[nloop] = object.boxs[nloop].classid;
+                          
+                            ptracker[nloop].init(boundingBox, *((unsigned int *)handle), rawWidth, rawHeight);
+
+                            result[nloop] = boundingBox;
+
+                            objectResult[nloop].classid    = classid[nloop];
+                            objectResult[nloop].confidence = confidence[nloop];
+                            objectResult[nloop].left       = (int)(result[nloop].x);
+                            objectResult[nloop].top        = (int)(result[nloop].y);
+                            objectResult[nloop].right      = (int)(result[nloop].width +result[nloop].x);
+                            objectResult[nloop].bottom     = (int)(result[nloop].height+result[nloop].y);
+                            if (objectResult[nloop].left < 0) objectResult[nloop].left = 0;
+                            if (objectResult[nloop].top < 0) objectResult[nloop].top = 0;
+                            if (objectResult[nloop].right >= rawWidth) objectResult[nloop].right = rawWidth - 1;
+                            if (objectResult[nloop].bottom >= rawHeight) objectResult[nloop].bottom = rawHeight - 1;
+                        }
+                        skiptrack = false;
+                        //std::cout << std::endl <<"MIN: object.boxs.size= "<<object.boxs.size()  << std::endl;
+                    }
+                       
+                      tmEnd = std::chrono::high_resolution_clock::now();
+                      diffTime  = tmEnd   - tmStart;
+                      std::cout<< "Generate ROI via init takes: :" << diffTime.count()*1000 <<"(ms)"<<std::endl;
+                 }
+                 
+             }
+             else
+             {
+                 if(skiptrack){
+                    // std::cout << std::endl <<"no need to track current frame : "<< pSurface << std::endl;
+                 }else
+                 {
+                    //KCF_update
+                    // Rect result;
+                    tmStart = std::chrono::high_resolution_clock::now();
+                    for(int nloop=0; nloop< nCurTrackObjects; nloop++)
+                    {
+                        result[nloop] = ptracker[nloop].update(*((unsigned int *)handle), rawWidth, rawHeight);
+                        objectResult[nloop].classid        = classid[nloop];
+                        objectResult[nloop].confidence     = confidence[nloop];
+                        objectResult[nloop].left           = (int)(result[nloop].x);
+                        objectResult[nloop].top            = (int)(result[nloop].y);
+                        objectResult[nloop].right          = (int)(result[nloop].width +result[nloop].x);
+                        objectResult[nloop].bottom         = (int)(result[nloop].height+result[nloop].y);
+                        if (objectResult[nloop].left < 0) objectResult[nloop].left = 0;
+                        if (objectResult[nloop].top < 0) objectResult[nloop].top = 0;
+                        if (objectResult[nloop].right >= rawWidth) objectResult[nloop].right = rawWidth - 1;
+                        if (objectResult[nloop].bottom >= rawHeight) objectResult[nloop].bottom = rawHeight - 1;
+                    }
+                    tmEnd = std::chrono::high_resolution_clock::now();
+                    diffTime  = tmEnd   - tmStart;
+                    std::cout<< "Generate ROI via update takes: :" << diffTime.count()*1000 <<"(ms)"<<std::endl;
+                   // std::cout<<" KCFROI region.x="<< result.x << " region.y=" << result.y << " regon.w="<< result.width <<" region.h"<<result.height<<std::endl;
+            }
+        }
+
+        // Get the Decode output surface, it is not Optimized way.
+        pTrackerConfig->pmfxAllocator->Lock(pTrackerConfig->pmfxAllocator->pthis, 
+                                              pSurface->Data.MemId, 
+                                              &(pSurface->Data));
+
+#if 1
+        WriteRawFrameToMemory(pSurface, rawWidth, rawHeight, dest,MFX_FOURCC_NV12);
+        pSurface->Data.Locked -=1;
+        pTrackerConfig->pmfxAllocator->Unlock(pTrackerConfig->pmfxAllocator->pthis, 
+                                              pSurface->Data.MemId, 
+                                              &(pSurface->Data));
+
+        //Got the NV12, now trying to conver to RGBP
+        cv::Mat yuvimg;
+        cv::Mat rgbimg;
+        rgbimg.create(rawHeight,rawWidth,CV_8UC3);
+        yuvimg.create(rawHeight*3/2, rawWidth, CV_8UC1);
+        yuvimg.data = dest;
+        cv::cvtColor(yuvimg, rgbimg, CV_YUV2BGR_I420);
+
+        //cv::namedWindow( "Display window", cv::WINDOW_AUTOSIZE );
+        //cv::imshow( "Display window", rgbimg );  
+        //cv::waitKey(100);
+
+        each_frame[0] +=1;
+        total_frame[0]++;
+        vector<Detector::DetctorResult> objects2;
+        objects2.resize(1);
+
+        objects2[0].imgsize.width  = rawWidth;
+        objects2[0].imgsize.height = rawHeight;
+        objects2[0].inputid = 0;
+        objects2[0].orgimg  = rgbimg;
+        objects2[0].frameno = 1;
+        objects2[0].channelid = 0 ;
+
+
+        for(int nloop=0; nloop< nCurTrackObjects && skiptrack == false; nloop++){
+        //if( objectResult[nloop].confidence > 0.3)
+        objects2[0].boxs.push_back(objectResult[nloop]);
+        }
+        pthread_mutex_lock(&mutexshow); 	
+        gresultque.push(objects2);
+        pthread_mutex_unlock(&mutexshow); 	
+        sem_post(&g_semtshow);
+#endif
+         dpipe_put(pTrackerConfig->dpipe, srcdata);
+
+       }// for (auto& dpipe : *(pScheConfig->pvdpipe)) 
+   }//while   
+   return (void *)0;
+
+}
+#endif
 class ScheduleThreadConfig
 {
  public:
@@ -645,12 +962,24 @@ void *ScheduleThreadFunc(void *arg)
              staticsStart3 = std::chrono::high_resolution_clock::now();
       
                    
-             faceret = gDetector[0].InsertImage(frame,objects,srcframe->channel, srcframe->frameno);	
+             faceret = gDetector[0].InsertImage(frame, objects, srcframe->channel, srcframe->frameno);	
              staticsEnd3 = std::chrono::high_resolution_clock::now();
              std::chrono::duration<double> diffTime3  = staticsEnd3   - staticsStart3;
              //std::cout <<" Infer:" << diffTime3.count()*1000.0<<"ms"<<std::endl;	
              if (Detector::INSERTIMG_GET == faceret ||Detector::INSERTIMG_PROCESSED == faceret)     {   //aSync call, you must use the ret image
+#ifdef TEST_KCF_TRACK_WITH_GPU
+				 std::cout <<" Infer:" << " done one frame : objects= "<< objects.size() << std::endl; 
 
+				 for(int k=0;k<objects.size();k++){
+					 // inform the queue of the channelid
+					  // pthread_mutex_lock(&mutexshow);	
+					  std::cout <<" Infer:" << " push detect result to Detect Result queue: "<< objects[k].channelid << " boxes=" <<objects[k].boxs.size()  <<std::endl; 
+					  gDetectResultque[objects[k].channelid].push(objects[k]);
+					  //pthread_mutex_unlock(&mutexshow);	
+					  sem_post(&gDetectResultAvaiable[objects[k].channelid]);
+			     }  
+
+#else
                  for(int k=0;k<objects.size();k++){
                      each_frame[objects[k].inputid]+=1;
                      total_frame[0]++;	
@@ -668,7 +997,8 @@ void *ScheduleThreadFunc(void *arg)
                          pthread_mutex_lock(&mutexshow); 
                      }			
                      pthread_mutex_unlock(&mutexshow); 					
-                 }			
+                 }		
+#endif 
             }//if (Detector::INSERTIMG_GET 
        }// for (auto& dpipe : *(pScheConfig->pvdpipe)) 
 	
@@ -925,7 +1255,7 @@ alignment(void *ptr, int alignto) {
 
 vsource_frame_t *
 vsource_frame_init(int channel, vsource_frame_t *frame) {
-    int i;
+    int i =0;
 
 
     bzero(frame, sizeof(vsource_frame_t));
@@ -949,10 +1279,12 @@ int main(int argc, char *argv[])
     vector<dpipe_t *>  vdpipe;
     float normalize_factor = 1.0;
     dpipe_t *dpipe[NUM_OF_CHANNELS];
+    dpipe_t *dKCFpipe[NUM_OF_CHANNELS];
 
     std::vector<pthread_t>    vScheduleThreads;
     std::vector<pthread_t>    vInferThreads;
     std::vector<pthread_t>    vDecThreads;
+    std::vector<pthread_t>    vKCFTrackerThreads;	
     std::vector<pthread_t>    vAssistThreads;
     std::vector<InferThreadConfig *> vpInferThreadConfig;
     std::vector<ScheduleThreadConfig *> vpScheduleThreadConfig;
@@ -990,7 +1322,7 @@ int main(int argc, char *argv[])
 
     std::string input_filename[NUM_OF_CHANNELS] = { FLAGS_i};
 
-    input_filename[0] = "../../test_content/video/0.h264";
+    input_filename[0] = "../../test_content/video/2.h264";
     input_filename[1] = "../../test_content/video/1.h264";
     input_filename[2] = "../../test_content/video/2.h264"; 
     input_filename[3] = "../../test_content/video/3.h264";
@@ -1029,10 +1361,16 @@ int main(int argc, char *argv[])
         if(nLoop==0){
             std::string device = FLAGS_d;
             ret = gDetector[nLoop].Load(device, FLAGS_m, binFileName, FLAGS_batch);
+#ifdef TEST_KCF_TRACK_WITH_GPU
+            gDetector[nLoop].SetMode(false);
+#endif
         }else{
             std::string device = "CPU";
             //gDetector[nLoop].Load(device, FLAGS_m, binFileName, FLAGS_batch);
             ret = gDetector[nLoop].Load(device, "../../test_content/IR/SSD_mobilenet/MobileNet-SSD.xml", "../../test_content/IR/SSD_mobilenet/MobileNet-SSD.bin",NUM_OF_CPU_BATCH);
+#ifdef TEST_KCF_TRACK_WITH_GPU            
+			gDetector[nLoop].SetMode(false);
+#endif
         }
         if(ret != 0){
             std::cout<< "Failed to load the provided model files, either file not found or datatype is not supported by selected device"<<std::endl;
@@ -1067,11 +1405,17 @@ int main(int argc, char *argv[])
         // Initialize display thread if needed
         DisplayThreadConfig *pDispThreadConfig = new DisplayThreadConfig();
         memset(pDispThreadConfig, 0, sizeof(DisplayThreadConfig));
+#ifdef TEST_KCF_TRACK_WITH_GPU
+        pDispThreadConfig->nCellWidth            = 640;//gNet_input_width;
+        pDispThreadConfig->nCellHeight           = 480;//gNet_input_height;
+        pDispThreadConfig->nRows                 = 1;//2;
+        pDispThreadConfig->nCols                 = 1;//3;
+#else
         pDispThreadConfig->nCellWidth            = gNet_input_width;
         pDispThreadConfig->nCellHeight           = gNet_input_height;
         pDispThreadConfig->nRows                 = 2;
         pDispThreadConfig->nCols                 = 3;
-
+#endif
         sem_init(&g_semtshow, 0, 0);
         pthread_mutex_init(&mutexshow,NULL);
         pthread_t threadid;
@@ -1094,7 +1438,7 @@ int main(int argc, char *argv[])
         sprintf(szBuffer, "SharedInferBuf%d", nLoop);
         dpipe[nLoop] = dpipe_create(0, szBuffer, 100,
                                     sizeof(vsource_frame_t) + gNet_input_width*gNet_input_height*4);
-        if( dpipe == NULL ) {
+        if( dpipe[nLoop] == NULL ) {
             std::cout<<"create dst-pipeline failed .\n"<<std::endl;
             return 1;
         }
@@ -1107,6 +1451,28 @@ int main(int argc, char *argv[])
             }
         }
         vdpipe.push_back(dpipe[nLoop]);
+
+#ifdef TEST_KCF_TRACK_WITH_GPU	
+		// Initialize the buffer for KCF tracker
+        // 20 buffer for each dpipe buffer
+        memset(szBuffer, 0, 256);
+        sprintf(szBuffer, "SharedKCFBuf%d", nLoop);
+        dKCFpipe[nLoop] = dpipe_create(0, szBuffer, 20,
+                                    sizeof(vsource_frame_t) + gNet_input_width*gNet_input_height*4); // so far only need to store frameno + vaSurfaceID
+        if( dKCFpipe[nLoop] == NULL ) {
+            std::cout<<"create dst-pipeline failed .\n"<<std::endl;
+            return 1;
+        }
+      
+        for(data = dKCFpipe[nLoop]->in; data != NULL; data = data->next) {
+            if(vsource_frame_init(0, (vsource_frame_t*) data->pointer) == NULL) {
+                std::cout<<"initialize failed" <<std::endl;
+                return 1;
+            }
+        }
+		//TODO: need to track it?
+        //vdpipe.push_back(dpipe[nLoop]);
+#endif
     }
    
 
@@ -1136,6 +1502,7 @@ int main(int argc, char *argv[])
     mfxFrameSurface1** pmfxVPP_Out_Surfaces[NUM_OF_CHANNELS];
 
     std::vector<DecThreadConfig *>   vpDecThradConfig;
+	std::vector<TrackerThreadConfig *>   vpTrackerThreadConfig;
 
     std::vector<MFXVideoDECODE *>    vpMFXDec;
     std::vector<MFXVideoVPP *>       vpMFXVpp;
@@ -1175,12 +1542,12 @@ int main(int argc, char *argv[])
         std::cout << "\t. Start preparing video parameters for decoding." << std::endl;
         mfxExtDecVideoProcessing DecoderPostProcessing;
         mfxVideoParam DecParams;
-        bool VD_LP_resize = true;
-#ifdef ENABLE_LP_RESIZE
-        VD_LP_resize = true;
-#endif
+        bool VD_LP_resize = false; // default value is for VDBOX+SFC case
+        if (0 == FLAGS_dec_postproc.compare("off"))
+            VD_LP_resize = false;
+        else
+            VD_LP_resize = true;
         memset(&DecParams, 0, sizeof(DecParams));
-
         DecParams.mfx.CodecId = MFX_CODEC_AVC;                  // h264
         DecParams.IOPattern = MFX_IOPATTERN_OUT_VIDEO_MEMORY;   // will use GPU memory in this example
 
@@ -1209,12 +1576,19 @@ int main(int argc, char *argv[])
         //   (Note that when using HW acceleration D3D surfaces are prefered, for better performance)
         std::cout << "\t. Start preparing VPP In/ Out parameters." << std::endl;
 
-
+#ifdef TEST_KCF_TRACK_WITH_GPU	
+        mfxU32 fourCC_VPP_Out =  MFX_FOURCC_RGB4;
+        mfxU32 chromaformat_VPP_Out = MFX_CHROMAFORMAT_YUV444;
+        mfxU8 bpp_VPP_Out     = 32;
+        mfxU8 channel_VPP_Out = 4;
+        mfxU16 nDecSurfNum= 0;
+#else
         mfxU32 fourCC_VPP_Out =  MFX_FOURCC_RGBP;
         mfxU32 chromaformat_VPP_Out = MFX_CHROMAFORMAT_YUV444;
         mfxU8 bpp_VPP_Out     = 24;
         mfxU8 channel_VPP_Out = 3;
         mfxU16 nDecSurfNum= 0;
+#endif
 
         mfxVideoParam VPPParams;
         mfxExtVPPScaling scalingConfig;
@@ -1292,8 +1666,6 @@ int main(int argc, char *argv[])
                 DecoderPostProcessing.Out.CropY = 0;
                 DecoderPostProcessing.Out.CropW = VPPParams.vpp.Out.CropW;
                 DecoderPostProcessing.Out.CropH = VPPParams.vpp.Out.CropH;
-
-                //DecParams.ExtParam = reinterpret_cast<mfxExtBuffer**>(&DecoderPostProcessing);
                 DecParams.ExtParam = (mfxExtBuffer **)pExtBufDec;
                 DecParams.ExtParam[0] = (mfxExtBuffer*)&(DecoderPostProcessing);
                 DecParams.NumExtParam = 1;
@@ -1305,7 +1677,7 @@ int main(int argc, char *argv[])
                 VPPParams.vpp.In.Height = DecoderPostProcessing.Out.Height;
                 VPPParams.vpp.In.CropW = VPPParams.vpp.Out.CropW;
                 VPPParams.vpp.In.CropH = VPPParams.vpp.Out.CropH;
-                /* scaling is off */
+                /* scaling is off (it was configured via extended buffer)*/
                 VPPParams.NumExtParam = 0;
                 VPPParams.ExtParam = NULL;
             }
@@ -1497,28 +1869,59 @@ int main(int argc, char *argv[])
         pDecThreadConfig->pmfxBS                 = &mfxBS[nLoop];
         pDecThreadConfig->pmfxSession            = &mfxSession[nLoop];
         pDecThreadConfig->pmfxAllocator          = &mfxAllocator[nLoop];
-       // pDecThreadConfig->decOutputFile          = decOutputFile;
         pDecThreadConfig->nChannel               = nLoop;
         pDecThreadConfig->nFPS                   = 1;//30/pDecThreadConfig->nFPS;
         pDecThreadConfig->bStartCount            = false;
         pDecThreadConfig->nFrameProcessed        = 0;
         pDecThreadConfig->dpipe                  = dpipe[nLoop];
-
+#ifdef TEST_KCF_TRACK_WITH_GPU
+		pDecThreadConfig->dKCFpipe               = dKCFpipe[nLoop];
+#endif
         vpDecThradConfig.push_back(pDecThreadConfig);
 
         pthread_t threadid;
         pthread_create(&threadid, NULL, DecodeThreadFunc, (void *)(pDecThreadConfig));
 
         vDecThreads.push_back(threadid) ; 
+#ifdef TEST_KCF_TRACK_WITH_GPU
+        //Create a KCF Tracking Thread for each channel 
+        TrackerThreadConfig *pTrackerThreadConfig = new TrackerThreadConfig();
+        memset(pTrackerThreadConfig, 0, sizeof(TrackerThreadConfig));
+        pTrackerThreadConfig->totalDecNum            = FLAGS_fr;
+        pTrackerThreadConfig->pmfxDEC                = pmfxDEC;
+        pTrackerThreadConfig->pmfxVPP                = pmfxVPP;
+        pTrackerThreadConfig->nDecSurfNum            = nDecSurfNum;
+        pTrackerThreadConfig->nVPP_In_SurfNum        = nVPP_In_SurfNum;
+        pTrackerThreadConfig->nVPP_Out_SurfNum       = nVPP_Out_SurfNum;
+        pTrackerThreadConfig->pmfxDecSurfaces        = pmfxDecSurfaces[nLoop];
+        pTrackerThreadConfig->pmfxVPP_In_Surfaces    = pmfxVPP_In_Surfaces[nLoop];
+        pTrackerThreadConfig->pmfxVPP_Out_Surfaces   = pmfxVPP_Out_Surfaces[nLoop];
+        pTrackerThreadConfig->pmfxSession            = &mfxSession[nLoop];
+        pTrackerThreadConfig->pmfxAllocator          = &mfxAllocator[nLoop];
+        pTrackerThreadConfig->nChannel               = nLoop;
+        pTrackerThreadConfig->dpipe                  = dKCFpipe[nLoop];
+        pTrackerThreadConfig->width                   = DecParams.mfx.FrameInfo.CropW;
+        pTrackerThreadConfig->height                  = DecParams.mfx.FrameInfo.CropH;
+        
+        vpTrackerThreadConfig.push_back(pTrackerThreadConfig);
 
-      //  vDecThreads.push_back( std::thread(DecodeThreadFunc,
-      //                          (void *)(pDecThreadConfig)
-      //                        ) );    
+        //pthread_t threadid;
+        pthread_create(&threadid, NULL, TrackerThreadFunc, (void *)(pTrackerThreadConfig));
 
+        vKCFTrackerThreads.push_back(threadid);
+        //vKCFTrackerThreads
+#endif
 
  #endif      
 
     }
+ #ifdef TEST_KCF_TRACK_WITH_GPU
+	for(int i=0; i< NUM_OF_CHANNELS; i++)
+    {
+        sem_init(&gNewTrackTaskAvaiable[i],0,0);
+		sem_init(&gDetectResultAvaiable[i],0,0);
+    }
+ #endif
 
   // Initialize scheduler thread
     {
@@ -1649,6 +2052,7 @@ void App_ShowUsage()
     std::cout << "\t\t-c <steams>    " << channels_message << std::endl;
     std::cout << "\t\t-show <steams>    " << show_message << std::endl;
     std::cout << "\t\t-batch <val>     " << batch_message << std::endl;
+    std::cout << "\t\t-dec_postproc <val>     " << dec_postproc_message << std::endl;
   
 }
 

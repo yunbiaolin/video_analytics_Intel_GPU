@@ -80,6 +80,8 @@ static const char channels_message[] = "Number of channels of streams to process
 static const char fps_message[] = "Number of frame rates of inference for each stream";
 /// @brief message for show result
 static const char show_message[] = "Show inference result in display GRID, maxium is 5 for now";
+/// @brief message for show result
+static const char dec_postproc_message[] = "VDBOX+SFC case: resize after decoder using direct pipe. Default - auto; use off option to do separate dec+vpp";
 
 
 /// @brief message for verbose
@@ -106,12 +108,14 @@ DEFINE_string(pp, DEFAULT_PATH_P, plugin_path_message);
 DEFINE_string(d, "GPU", target_device_message);
 /// \brief device the target device to infer on <br>
 DEFINE_string(t, "SSD", infer_type_message);
+/// \brief resize after decoder using direct pipe
+DEFINE_string(dec_postproc, "off", dec_postproc_message);
 /// \brief Enable per-layer performance report
 DEFINE_bool(pc, false, performance_counter_message);
 /// \brief Enable per-layer performance report
 DEFINE_double(thresh, .8, threshold_message);
 /// \brief Batch size
-DEFINE_int32(batch, 6, batch_message);
+DEFINE_int32(batch, 1, batch_message);
 /// \brief Frames count
 DEFINE_int32(fr, 256, frames_message);
 /// \brief Channels of streams
@@ -128,14 +132,19 @@ DEFINE_bool(v, false, verbose_message);
 DEFINE_double(max_encode_ms, 40.0,NULL);
 
 #define	VIDEO_SOURCE_MAX_STRIDE  4
+#include <mfxvideo++.h>
+#include <mfxstructures.h>
 
  /**
  * Data structure to store a video frame in RGBA or YUV420 format.
  */
 typedef struct vsource_frame_s {
-    int channel;		/**< The channel id for the video frame */
-    int frameno;
-    long long imgpts;	/**< Captured time stamp
+    int  channel;		/**< The channel id for the video frame */
+    int  frameno;
+	mfxFrameSurface1* pmfxSurface;
+    long long imgpts;
+	bool bROIRrefresh;       /**< key frame wehther it is a ROI update requried.*/
+  	/**< Captured time stamp
                          * (or presentatin timestamp).
                          * This is actually a sequence number of
                          * captured video frame.  

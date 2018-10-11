@@ -15,10 +15,14 @@
  * Workload balance between CPU and GPU is introduced.  you need to manual enable it by define ENABLE_WORKLOAD_BALANCE in main.cpp
  * Batch across differnt streams is introduced
  * MobileNetSSD as an example to show benfit of this architecture
+WW41
+ * added VD+SFC which is able to do CSC from NV12 to ARGB on the fly with decoding. it can help save the memroy bandwidth
+ * KCF acceleration with GPU, which is able to gain 4x performance boost compared to CPU only
 
 ### WIP features:
  * Further improve the workload scheduing with Intel's telemtry library
- * Add other key features after object detection into the pipeline
+ * Video Process before inference
+ * Encoding after composition
  
 ### Expected Usages:
 
@@ -31,6 +35,8 @@
  * Intel Media Driver - https://github.com/intel/media-driver.git
  * Intel Computer Vision SDK - https://software.intel.com/en-us/openvino-toolkit/choose-download 
  * Intel OpenCL driver needs to be installed correctly - https://github.com/intel/compute-runtime
+ * Intel C-for-Media(MDF)  - https://01.org/c-for-media-development-package/downloads
+
 
 ## pre-requisites installation without Docker
 
@@ -38,13 +44,25 @@
    Install OS and finish "sudo apt-get update; sudo apt-get upgrade; reboot"
    Copy "vait_prerequisites_install_ubuntu.py" and "silent.cfg" to other folder (ex: ~/tmp)
 
+
+   - please change the OpenVINO or OpenCL driver with the latest version in the script.
+
    - SKL/BXT
 	   Script will create many folders and download packages in current folder, so you'd be better run this from other directory, not in the VAIT folder.
 
 	   tmp$ sudo vait_prerequisites_install_ubuntu.py
 	   tmp$ reboot
+   - install depdency libraires
+     * libYUV:  
+        - https://chromium.googlesource.com/libyuv/libyuv
+     * xcb display: 
+        - apt-get install libxcb-xv0-dev
+     * MDF runtime: 
+        - download a package from https://01.org/c-for-media-development-package/downloads
+        - install runtime via drivers/install.sh
 ## installation with Docker
 
+NOTE: docker steps maybe out of dated. 
  * Ubuntu 16.04.3
    Install OS and finish "sudo apt-get update; sudo apt-get upgrade; reboot"
 
@@ -52,9 +70,8 @@
  * docker run -ti --device /dev/dri:/dev/dri IMAGEID /bin/bash
 
 ## build
-
  * Ubuntu 16.04.3
-
+ * define TEST_KCF_TRACK_WITH_GPU in main.cpp to enable KCF acceleration with GPU
    $ source env.sh
    $ mkdir build
    $ cd build

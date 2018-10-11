@@ -52,7 +52,8 @@ public:
 	typedef struct __ImageInfo {
 		cv::Size isize;
 		int inputid;
-                int frameno;
+        int frameno;
+        int channelid;
 		cv::Mat orgimg;
 	}ImageInfo;
 
@@ -70,7 +71,8 @@ public:
 		cv::Mat orgimg;
 		cv::Size imgsize;
 		int inputid;
-                int frameno;
+        int frameno;
+        int channelid;
 	}DetctorResult;
 	
 	Detector();
@@ -79,7 +81,7 @@ public:
 
 	inline int GetCurBatch(){return  num_batch_;}
 	inline cv::Size GetNetSize(){return input_geometry_;}
-	InsertImgStatus InsertImage(const cv::Mat& orgimg, vector<DetctorResult>& objects, int inputid = 0, int frameno=0);
+	InsertImgStatus InsertImage(const cv::Mat& orgimg, vector<DetctorResult>& objects, int inputid = 0, int frameno=0, int channelid=0);
 	void SetMode(bool isSync);
 	std::string err_msg;
 
