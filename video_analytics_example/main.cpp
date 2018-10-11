@@ -82,8 +82,6 @@ using namespace std;
 #define MFX_FOURCC_RGBP  MFX_MAKEFOURCC('R','G','B','P')
 #endif
 
-//#define ENABLE_LP_RESIZE
-
 
 Detector gDetector[NUM_OF_GPU_INFER];
 sem_t gNewtaskAvaiable;
@@ -1171,12 +1169,11 @@ int main(int argc, char *argv[])
         std::cout << "\t. Start preparing video parameters for decoding." << std::endl;
         mfxExtDecVideoProcessing DecoderPostProcessing;
         mfxVideoParam DecParams;
-        bool VD_LP_resize = true;
-#ifdef ENABLE_LP_RESIZE
-        VD_LP_resize = true;
-#endif
-        memset(&DecParams, 0, sizeof(DecParams));
+        bool VD_LP_resize = true; // default value is for VDBOX+SFC case
+        if (0 == FLAGS_dec_postproc.compare("off"))
+            VD_LP_resize = false;
 
+        memset(&DecParams, 0, sizeof(DecParams));
         DecParams.mfx.CodecId = MFX_CODEC_AVC;                  // h264
         DecParams.IOPattern = MFX_IOPATTERN_OUT_VIDEO_MEMORY;   // will use GPU memory in this example
 
@@ -1288,8 +1285,6 @@ int main(int argc, char *argv[])
                 DecoderPostProcessing.Out.CropY = 0;
                 DecoderPostProcessing.Out.CropW = VPPParams.vpp.Out.CropW;
                 DecoderPostProcessing.Out.CropH = VPPParams.vpp.Out.CropH;
-
-                //DecParams.ExtParam = reinterpret_cast<mfxExtBuffer**>(&DecoderPostProcessing);
                 DecParams.ExtParam = (mfxExtBuffer **)pExtBufDec;
                 DecParams.ExtParam[0] = (mfxExtBuffer*)&(DecoderPostProcessing);
                 DecParams.NumExtParam = 1;
@@ -1301,7 +1296,7 @@ int main(int argc, char *argv[])
                 VPPParams.vpp.In.Height = DecoderPostProcessing.Out.Height;
                 VPPParams.vpp.In.CropW = VPPParams.vpp.Out.CropW;
                 VPPParams.vpp.In.CropH = VPPParams.vpp.Out.CropH;
-                /* scaling is off */
+                /* scaling is off (it was configured via extended buffer)*/
                 VPPParams.NumExtParam = 0;
                 VPPParams.ExtParam = NULL;
             }
@@ -1645,6 +1640,7 @@ void App_ShowUsage()
     std::cout << "\t\t-c <steams>    " << channels_message << std::endl;
     std::cout << "\t\t-show <steams>    " << show_message << std::endl;
     std::cout << "\t\t-batch <val>     " << batch_message << std::endl;
+    std::cout << "\t\t-dec_postproc <val>     " << dec_postproc_message << std::endl;
   
 }
 

@@ -80,6 +80,8 @@ static const char channels_message[] = "Number of channels of streams to process
 static const char fps_message[] = "Number of frame rates of inference for each stream";
 /// @brief message for show result
 static const char show_message[] = "Show inference result in display GRID, maxium is 5 for now";
+/// @brief message for show result
+static const char dec_postproc_message[] = "VDBOX+SFC case: resize after decoder using direct pipe. Default - auto; use off option to do separate dec+vpp";
 
 
 /// @brief message for verbose
@@ -106,6 +108,8 @@ DEFINE_string(pp, DEFAULT_PATH_P, plugin_path_message);
 DEFINE_string(d, "GPU", target_device_message);
 /// \brief device the target device to infer on <br>
 DEFINE_string(t, "SSD", infer_type_message);
+/// \brief resize after decoder using direct pipe
+DEFINE_string(dec_postproc, "auto", dec_postproc_message);
 /// \brief Enable per-layer performance report
 DEFINE_bool(pc, false, performance_counter_message);
 /// \brief Enable per-layer performance report
