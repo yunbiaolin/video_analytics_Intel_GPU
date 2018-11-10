@@ -292,7 +292,7 @@ void *DisplayThreadFunc(void *arg)
             gresultque.pop();			
             pthread_mutex_unlock(&mutexshow); 	
             memset(fpshaswrite,0,sizeof(fpshaswrite));
-			
+
             for(int k=0;k<objects.size();k++){
                 for(int i=0;i<objects[k].boxs.size();i++)
                 {
@@ -317,7 +317,7 @@ void *DisplayThreadFunc(void *arg)
                     } 	
                 }
             }
-            #ifndef TEST_KCF_TRACK_WITH_GPU
+        #ifndef TEST_KCF_TRACK_WITH_GPU
             if(!gresultque1.empty()){
                 Detector::DetctorResult tempObj;
                 pthread_mutex_lock(&mutexshow); 	
@@ -331,18 +331,18 @@ void *DisplayThreadFunc(void *arg)
                 dispNum++;
                 pthread_mutex_unlock(&mutexshow); 
 
-        for(int i=0;i<tempObj.boxs.size();i++)
-        {
+                for(int i=0;i<tempObj.boxs.size();i++)
+                {
                     if(CLASSES[(int)(tempObj.boxs[i].classid)][0]=='!')
                         continue;
                     cv::rectangle(tempObj.orgimg,cvPoint(tempObj.boxs[i].left,tempObj.boxs[i].top),cvPoint(tempObj.boxs[i].right,tempObj.boxs[i].bottom),cv::Scalar(71, 99, 250),2);
                     std::stringstream ss;  
                     ss << CLASSES[(int)(tempObj.boxs[i].classid)] << "/" << tempObj.boxs[i].confidence;  
                     std::string  text = ss.str();  
-           // cv::putText(tempObj.orgimg, text, cvPoint(tempObj.boxs[i].left,tempObj.boxs[i].top+20), cv::FONT_HERSHEY_PLAIN, 1.0f, cv::Scalar(0, 255, 255));  	
-           }//for(int i=0;i<objects[k].boxs.size();i++)
+                    cv::putText(tempObj.orgimg, text, cvPoint(tempObj.boxs[i].left,tempObj.boxs[i].top+20), cv::FONT_HERSHEY_PLAIN, 1.0f, cv::Scalar(0, 255, 255));  	
+                }//for(int i=0;i<objects[k].boxs.size();i++)
 
-               tempObj.orgimg.copyTo(eachscreen[tempObj.inputid]);
+                tempObj.orgimg.copyTo(eachscreen[tempObj.inputid]);
                // }//for(int k=0;k<objects.size();k++){
             }// if(!gresultque1.empty()){	
             // Update Peformance at the last display Grid
@@ -1395,7 +1395,7 @@ int main(int argc, char *argv[])
         }else{
             std::string device = "CPU";
             //gDetector[nLoop].Load(device, FLAGS_m, binFileName, FLAGS_batch);
-            ret = gDetector[nLoop].Load(device, "../../test_content/IR/SSD_mobilenet/MobileNet-SSD.xml", "../../test_content/IR/SSD_mobilenet/MobileNet-SSD.bin",NUM_OF_CPU_BATCH);
+            ret = gDetector[nLoop].Load(device, "../../test_content/IR/SSD_mobilenet/MobileNetSSD_deploy_32.xml", "../../test_content/IR/SSD_mobilenet/MobileNetSSD_deploy_32.bin",NUM_OF_CPU_BATCH);
 #ifdef TEST_KCF_TRACK_WITH_GPU            
             gDetector[nLoop].SetMode(false);
 #endif
