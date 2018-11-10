@@ -55,6 +55,7 @@ WW41
    - install depdency libraires
      * libYUV:  
         - https://chromium.googlesource.com/libyuv/libyuv
+     * libjpeg: sudo apt-get install libjpeg-dev
      * xcb display: 
         - apt-get install libxcb-xv0-dev
      * MDF runtime: 
