@@ -19,9 +19,9 @@ include(OptimizationFlags)
 
 set(OpenCV_STATIC OFF)
 
-find_package(OpenCV 3.3 COMPONENTS core imgproc highgui imgcodecs)
+find_package(OpenCV COMPONENTS core imgproc highgui imgcodecs)
 if(NOT(OpenCV_FOUND))
-    find_package(OpenCV 3.3 REQUIRED world)
+    find_package(OpenCV  REQUIRED world)
 endif()
 set (BUILD_VALIDATION_APP OFF)
 if (OpenCV_FOUND)

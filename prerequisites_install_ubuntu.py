@@ -138,7 +138,9 @@ if __name__ == "__main__":
     os.system(cmd)
     
     cmd ="apt-get -y install git libssl-dev dh-autoreconf cmake libgl1-mesa-dev libpciaccess-dev build-essential curl imagemagick gedit mplayer unzip yasm libjpeg-dev linux-firmware ukuu; "
-    cmd+="apt-get -y install libopencv-dev checkinstall pkg-config libgflags-dev"
+    cmd+="apt-get -y install libopencv-dev checkinstall pkg-config libgflags-dev libxcb-xv0-dev libomp-dev;"
+    cmd+="apt-get -y remove xserver-xorg-core-hwe-16.04;"
+    cmd+="apt-get -y install ubuntu-desktop xorg xserver-xorg-core;"
     os.system(cmd)
 
     if enable_msdk == True:
@@ -154,9 +156,12 @@ if __name__ == "__main__":
     # Install kernel
     os.system("ukuu --install v4.14.16")
 
-    # Create the build directory for UMD
+    # Create installation path
     os.system("mkdir -p %s/build"%(WORKING_DIR))
-
+    cmd = "mkdir -p /opt; "
+    cmd+= "mkdir -p /opt/intel; "
+    print cmd
+    os.system(cmd)
     if enable_msdk == True:
         print ""
         print "************************************************************************"
@@ -194,6 +199,12 @@ if __name__ == "__main__":
             print cmd
             os.system(cmd);
 
+        print "libyuv"
+        if not os.path.exists("%s/libyuv"%(WORKING_DIR)): 
+	    cmd = "cd %s; git clone https://chromium.googlesource.com/libyuv/libyuv.git; "%(WORKING_DIR)
+	    print cmd
+	    os.system(cmd);
+
         print "tbb"
         if not os.path.exists("%s/tbb"%(WORKING_DIR)): 
             cmd = "cd %s; git clone https://github.com/01org/tbb.git; "%(WORKING_DIR)
@@ -207,13 +218,13 @@ if __name__ == "__main__":
 
         # Build and install libVA including the libVA utils for vainfo.
         cmd ="cd %s/libva; "%(WORKING_DIR)
-        cmd+="git checkout fbf7138389f7d6adb6ca743d0ddf2dbc232895f6; "
+        cmd+="git checkout 285267586a3d4db0e721d30d4a5f5f9fe6a3c913; "
         cmd+="./autogen.sh --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu; make -j4; make install"
         print cmd
         os.system(cmd)
 
         cmd ="cd %s/libva-utils; "%(WORKING_DIR)
-        cmd+="git checkout 7b85ff442d99c233fb901a6fe3407d5308971645; "
+        cmd+="git checkout 375e4eaae3377c1806e83874f9fa9b79b1f225b1; "
         cmd+="./autogen.sh --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu; make -j4; make install"
         print cmd
         os.system(cmd)
@@ -225,18 +236,18 @@ if __name__ == "__main__":
 
         # Build and install media driver    
         cmd = "cd %s/gmmlib; "%(WORKING_DIR)
-        cmd+= "git checkout b1451bbe4c506f17ddc819f12b4b448fc08698c5"
+        cmd+= "git checkout 5cd8dca50b1f6ddbce229098dc2bec55fc922fa7"
         print cmd
         os.system(cmd)
 
         cmd = "cd %s/media-driver; "%(WORKING_DIR)
-        cmd+= "git checkout 2eab2e248c5787ceaebd76be791e60e28e56fbf3"
+        cmd+= "git checkout 840c756952419510566248734138c68b5b6bc76f"
         print cmd
         os.system(cmd)
-
+        cmd = "mkdir %s/build; "%(WORKING_DIR)
         cmd = "cd %s/build; "%(WORKING_DIR)
-        cmd+= "cmake ../media-driver -DMEDIA_VERSION=\"2.0.0\" -DBUILD_ALONG_WITH_CMRTLIB=1 -DBS_DIR_GMMLIB=`pwd`/../gmmlib/Source/GmmLib/ -DBS_DIR_COMMON=`pwd`/../gmmlib/Source/Common/ -DBS_DIR_INC=`pwd`/../gmmlib/Source/inc/ -DBS_DIR_MEDIA=`pwd`/../media-driver -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=/usr/lib/x86_64-linux-gnu -DINSTALL_DRIVER_SYSCONF=OFF -DLIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri; "
-        cmd+="make -j4; make install"
+        cmd+= "cmake ../media-driver; "
+        cmd+= "make -j4; make install"
         print cmd
         os.system(cmd)
 
@@ -248,15 +259,21 @@ if __name__ == "__main__":
         # Build and install Media SDK library and samples
         cmd ="cd %s/MediaSDK; "%(WORKING_DIR)
         cmd+="export MFX_HOME=%s/MediaSDK; "%(WORKING_DIR)
-        cmd+="perl tools/builder/build_mfx.pl --cmake=intel64.make.release; "
-        if len(BUILD_TARGET)<2:
-            cmd+="make -C __cmake/intel64.make.release/ -j4; "
-        else:
-            cmd+="make -C __cmake/intel64.make.release/ -j4 --target=%s; "%(BUILD_TARGET)
+        cmd+="mkdir %s/MediaSDK/build; "%(WORKING_DIR)
+        cmd+="cd %s/MediaSDK/build; "%(WORKING_DIR)
+        cmd+="cmake ..;make -j8;make install; "
         print cmd
         os.system(cmd)
 
-        cmd ="cd %s/MediaSDK/__cmake/intel64.make.release; make install"%(WORKING_DIR)
+	#Build and install libyuv
+	cmd = "cd %s/libyuv; "%(WORKING_DIR)
+        cmd+= "git checkout 10385c87a678dc61eeba5d69ad941a3cbdf9a9f9"
+        print cmd
+        os.system(cmd)
+        cmd = "mkdir %s/libyuv/build; "%(WORKING_DIR)
+        cmd+= "cd %s/libyuv/build; "%(WORKING_DIR)
+        cmd+= "cmake ..; "
+        cmd+= "make -j4; make install"
         print cmd
         os.system(cmd)
 
@@ -291,37 +308,36 @@ if __name__ == "__main__":
         cmd="usermod -a -G video %s"%(username)
         print cmd
         os.system(cmd)
+    
+        if not os.path.exists("l_openvino_toolkit_p_2018.4.420"):
+            print_info("downloading Intel(R) Computer Vision SDK", loglevelcode.INFO) 
+            cmd="curl -# -O http://registrationcenter-download.intel.com/akdlm/irc_nas/14920/l_openvino_toolkit_p_2018.4.420.tgz"
+            print cmd
+            os.system(cmd)
 
-    if not os.path.exists("intel-opencl"):
-        print_info("downloading Intel(R) OpenCL SRB5.0 driver", loglevelcode.INFO) 
-        cmd="curl -# -O http://registrationcenter-download.intel.com/akdlm/irc_nas/11396/SRB5.0_linux64.zip"
+        print_info("installing Intel(R) Computer Vision SDK RC4", loglevelcode.INFO) 
+        cmd ="tar -xzf l_openvino_toolkit_p_2018.4.420.tgz;"
+        cmd+="cp silent.cfg l_openvino_toolkit_p_2018.4.420;"
+        cmd+="cd l_openvino_toolkit_p_2018.4.420;"
+	print "i'm here1"
+        cmd+="./install.sh -s silent.cfg; "
+        print "i'm here2"
         print cmd
         os.system(cmd)
 
-    print_info("installing Intel(R) OpenCL SRB5.0 driver", loglevelcode.INFO)
-    cmd = "unzip -x SRB5.0_linux64.zip; "
-    cmd+= "mkdir -p %s/intel-opencl; "%(WORKING_DIR)
-    cmd+= "tar -C intel-opencl -Jxf intel-opencl-cpu-r5*.tar.xz; "
-    cmd+= "tar -C intel-opencl -Jxf intel-opencl-devel-r5*.tar.xz; "
-    cmd+= "tar -C intel-opencl -Jxf intel-opencl-r5*.tar.xz; "
-    cmd+= "cp -R intel-opencl/* /; "
-    cmd+= "ldconfig"
-    print cmd
-    os.system(cmd)
 
-    if not os.path.exists("intel_cv_sdk_ubuntu_r3_2017.1.163"):
-        print_info("downloading Intel(R) Computer Vision SDK", loglevelcode.INFO) 
-        cmd="curl -# -O http://registrationcenter-download.intel.com/akdlm/irc_nas/12492/intel_cv_sdk_ubuntu_r3_2017.1.163.tgz"
+        print_info("installing Intel(R) OpenCL Neo driver", loglevelcode.INFO)
+        cmd = "mkdir -p %s/neo; "%(WORKING_DIR)
+
+        cmd+= "cd %s/neo; "%(WORKING_DIR)
+        cmd+= "wget https://github.com/intel/compute-runtime/releases/download/18.45.11804/intel-gmmlib_18.4.0.348_amd64.deb; "
+        cmd+= "wget https://github.com/intel/compute-runtime/releases/download/18.45.11804/intel-igc-core_18.44.1060_amd64.deb; "
+        cmd+= "wget https://github.com/intel/compute-runtime/releases/download/18.45.11804/intel-igc-opencl_18.44.1060_amd64.deb; "
+        cmd+= "wget https://github.com/intel/compute-runtime/releases/download/18.45.11804/intel-opencl_18.45.11804_amd64.deb;"
+        cmd+= "dpkg -i *.deb;"  
+        cmd+= "ldconfig;"
         print cmd
         os.system(cmd)
-
-    print_info("installing Intel(R) Computer Vision SDK beta r3", loglevelcode.INFO) 
-    cmd ="tar -xzf intel_cv_sdk_ubuntu_r3_2017.1.163.tgz;"
-    cmd+="cp silent.cfg intel_cv_sdk_ubuntu_r3_2017.1.163;"
-    cmd+="cd intel_cv_sdk_ubuntu_r3_2017.1.163;"
-    cmd+="./install.sh -s silent.cfg; "
-    print cmd
-    os.system(cmd)
 
     if enable_msdk == True:
         print ""

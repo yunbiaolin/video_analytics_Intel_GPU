@@ -1413,8 +1413,6 @@ int main(int argc, char *argv[])
 
         // Prepare output file to archive result video
         sprintf(szBuffer,"out_%d.h264",nLoop);
-        video[nLoop]= new VideoWriter(szBuffer, CV_FOURCC('H', '2', '6', '4'), 10, 
-        Size(gNet_input_width, gNet_input_height), true);
         
         sem_init(&gsemtInfer[nLoop], 0, 0);
         pthread_mutex_init(&mutexinfer[nLoop],NULL);

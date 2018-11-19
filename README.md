@@ -41,34 +41,22 @@ WW41
 ## pre-requisites installation without Docker
 
  * Ubuntu 16.04.3
-   Install OS and finish "sudo apt-get update; sudo apt-get upgrade; reboot"
-   Copy "vait_prerequisites_install_ubuntu.py" and "silent.cfg" to other folder (ex: ~/tmp)
+   Install OS and finish "sudo apt-get update; reboot"
+   Copy "prerequisites_install_ubuntu.py" and "silent.cfg" to other folder (ex: ~/tmp)
 
-
-   - please change the OpenVINO or OpenCL driver with the latest version in the script.
 
    - SKL/BXT
-	   Script will create many folders and download packages in current folder, so you'd be better run this from other directory, not in the VAIT folder.
+	   Script will create many folders and download packages in current folder, so you'd be better run this from other directory, not in the current folder.
 
-	   tmp$ sudo vait_prerequisites_install_ubuntu.py
+	   tmp$ sudo prerequisites_install_ubuntu.py
 	   tmp$ reboot
-   - install depdency libraires
-     * libYUV:  
-        - https://chromium.googlesource.com/libyuv/libyuv
-     * libjpeg: sudo apt-get install libjpeg-dev
-     * xcb display: 
-        - apt-get install libxcb-xv0-dev
+   - Install depdency libraires if you need to enable KCF tracking with GPU acceleration
      * MDF runtime: 
         - download a package from https://01.org/c-for-media-development-package/downloads
         - install runtime via drivers/install.sh
-## installation with Docker
+## Installation with Docker
 
-NOTE: docker steps maybe out of dated. 
- * Ubuntu 16.04.3
-   Install OS and finish "sudo apt-get update; sudo apt-get upgrade; reboot"
-
- * docker build -t <any name>:<any:version> .
- * docker run -ti --device /dev/dri:/dev/dri IMAGEID /bin/bash
+WIP
 
 ## build
  * Ubuntu 16.04.3
@@ -92,6 +80,6 @@ NOTE: docker steps maybe out of dated.
 You may meet XCB display issue, please follow up below steps to check whether it an solve your issue.
 https://github.com/teltek/Galicaster/issues/543
 
-sudo apt remove  xserver-xorg-core-hwe-16.04 #Also remove all the dependencies
-sudo apt install ubuntu-desktop xorg xserver-xorg-core #Also install the required dependencies
+step1: sudo apt remove  xserver-xorg-core-hwe-16.04 #Also remove all the dependencies
+step2: sudo apt install ubuntu-desktop xorg xserver-xorg-core #Also install the required dependencies
 

@@ -88,8 +88,8 @@ the use of this software, even if advised of the possibility of such damage.
 #include "labdata.hpp"
 #endif
 #include <chrono>
-#include <highgui.h>
-#include <cv.h>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/opencv.hpp>
 #include "fhog.hpp"
 #include "opencv2/imgproc/imgproc_c.h"
 #include "intelscalartbl.h"
