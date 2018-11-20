@@ -256,15 +256,6 @@ if __name__ == "__main__":
         print_info("Build and Install Media SDK and samples", loglevelcode.INFO)
         print "************************************************************************"
 
-        # Build and install Media SDK library and samples
-        cmd ="cd %s/MediaSDK; "%(WORKING_DIR)
-        cmd+="export MFX_HOME=%s/MediaSDK; "%(WORKING_DIR)
-        cmd+="mkdir %s/MediaSDK/build; "%(WORKING_DIR)
-        cmd+="cd %s/MediaSDK/build; "%(WORKING_DIR)
-        cmd+="cmake ..;make -j8;make install; "
-        print cmd
-        os.system(cmd)
-
 	#Build and install libyuv
 	cmd = "cd %s/libyuv; "%(WORKING_DIR)
         cmd+= "git checkout 10385c87a678dc61eeba5d69ad941a3cbdf9a9f9"
@@ -340,6 +331,20 @@ if __name__ == "__main__":
         os.system(cmd)
 
     if enable_msdk == True:
+        # Build and install Media SDK library and samples
+        if os.path.exists("/opt/intel/mediasdk"):
+            cmd = "rm /opt/intel/mediasdk -rf" 
+            print cmd
+            os.system(cmd);
+
+        cmd ="cd %s/MediaSDK; "%(WORKING_DIR)
+        cmd+="export MFX_HOME=%s/MediaSDK; "%(WORKING_DIR)
+        cmd+="mkdir %s/MediaSDK/build; "%(WORKING_DIR)
+        cmd+="cd %s/MediaSDK/build; "%(WORKING_DIR)
+        cmd+="cmake ..;make -j8;make install; "
+        print cmd
+        os.system(cmd)
+
         print ""
         print "************************************************************************"
         print_info("Set environment variables. ", loglevelcode.INFO)

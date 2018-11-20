@@ -46,10 +46,10 @@ WW41
 
 
    - SKL/BXT
-	   Script will create many folders and download packages in current folder, so you'd be better run this from other directory, not in the current folder.
+       Script will create many folders and download packages in current folder, so you'd be better run this from other directory, not in the current folder.
 
-	   tmp$ sudo prerequisites_install_ubuntu.py
-	   tmp$ reboot
+       tmp$ sudo prerequisites_install_ubuntu.py
+       tmp$ reboot
    - Install depdency libraires if you need to enable KCF tracking with GPU acceleration
      * MDF runtime: 
         - download a package from https://01.org/c-for-media-development-package/downloads
