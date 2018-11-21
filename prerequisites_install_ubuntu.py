@@ -140,7 +140,7 @@ if __name__ == "__main__":
     cmd ="apt-get -y install git libssl-dev dh-autoreconf cmake libgl1-mesa-dev libpciaccess-dev build-essential curl imagemagick gedit mplayer unzip yasm libjpeg-dev linux-firmware ukuu; "
     cmd+="apt-get -y install libopencv-dev checkinstall pkg-config libgflags-dev libxcb-xv0-dev libomp-dev;"
     cmd+="apt-get -y remove xserver-xorg-core-hwe-16.04;"
-    cmd+="apt-get -y install ubuntu-desktop xorg xserver-xorg-core;"
+    cmd+="apt-get -y install ubuntu-desktop xorg xserver-xorg-core clinfo;"
     os.system(cmd)
 
     if enable_msdk == True:
