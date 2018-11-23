@@ -56,7 +56,9 @@ WW41
         - install runtime via drivers/install.sh
 ## Installation with Docker
 
-WIP
+   - Build a docker image
+      * configure your network proxy and make sure your docker is able to access network well.
+      * run ./build_docker_image.sh 
 
 ## build
  * Ubuntu 16.04.3
@@ -73,6 +75,13 @@ WIP
 
    .\build\video_analytics_example\video_analytics_example -d GPU -c 1 -batch 6
 
+ * runnig in docker image
+
+   * get the imageID via "docker image ls" in a terminal
+   * docker run -ti -device /dev/dri:/dev/dri {imageID} /bin/sh
+   * cd /vait/build/video_analytics_example
+   * video_analytics_example -d GPU -c 1 -batch 6
+
 #streams are hardcoded in the main.cpp, so no need to specify the source clip.
 
 ### Q&A
@@ -80,6 +89,6 @@ WIP
 You may meet XCB display issue, please follow up below steps to check whether it an solve your issue.
 https://github.com/teltek/Galicaster/issues/543
 
-step1: sudo apt remove  xserver-xorg-core-hwe-16.04 #Also remove all the dependencies
-step2: sudo apt install ubuntu-desktop xorg xserver-xorg-core #Also install the required dependencies
+ * sudo apt remove  xserver-xorg-core-hwe-16.04 #Also remove all the dependencies
+ * sudo apt install ubuntu-desktop xorg xserver-xorg-core #Also install the required dependencies
 

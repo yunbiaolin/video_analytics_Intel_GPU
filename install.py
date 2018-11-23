@@ -90,21 +90,22 @@ def find_library(libfile):
     return found
 
 def fnParseCommandline():
-	if len(sys.argv) == 1:		
-		return "-all"
-	elif len(sys.argv) > 3:
-		return "not support"
-		exit(0)
+    if len(sys.argv) == 1:		
+        return "-all"
+    elif len(sys.argv) > 3:
+        return "not support"
+        exit(0)
 	
-	if sys.argv[1] == "-h":
-		print "[%s" % sys.argv[0] + " usage]"
-		print "\t -h: display help"
-		print "\t -all: install all components"
-		print "\t -b BUILT_TARGET"
-		print "\t -nomsdk: skip prerequisites for MSDK"
-		exit(0)
+    if sys.argv[1] == "-h":
+        print "[%s" % sys.argv[0] + " usage]"
+        print "\t -h: display help"
+        print "\t -all: install all components"
+        print "\t -b BUILT_TARGET"
+        print "\t -nomsdk: skip prerequisites for MSDK"
+        print "\t -cvsdk: install OpenVINO"
+        exit(0)
 
-	return sys.argv[1]
+    return sys.argv[1]
 
 if __name__ == "__main__":
 
@@ -117,6 +118,7 @@ if __name__ == "__main__":
 
     BUILD_TARGET=""
     enable_msdk = True
+    install_cvsdk = False
 
     cmd = fnParseCommandline()
 
@@ -126,35 +128,31 @@ if __name__ == "__main__":
     elif cmd == "-nomsdk":
         print_info("Skip prerequisites installation for MediaSDK interop tutorials", loglevelcode.INFO)
         enable_msdk = False
+    elif cmd == "-cvsdk":
+        print_info("Install legacy CVSDK R3 package", loglevelcode.INFO)
+        install_cvsdk = True
 
     print ""
     print "************************************************************************"
     print_info("Install required tools and create build environment.", loglevelcode.INFO)
     print "************************************************************************"
    
-    # Install the necessary tools
-    os.system("sudo add-apt-repository ppa:teejee2008/ppa")
-    cmd="apt-get update"
-    os.system(cmd)
-    
-    cmd ="apt-get -y install git libssl-dev dh-autoreconf cmake libgl1-mesa-dev libpciaccess-dev build-essential curl imagemagick gedit mplayer unzip yasm libjpeg-dev linux-firmware ukuu; "
-    cmd+="apt-get -y install libopencv-dev checkinstall pkg-config libgflags-dev libxcb-xv0-dev libomp-dev;"
-    cmd+="apt-get -y remove xserver-xorg-core-hwe-16.04;"
-    cmd+="apt-get -y install ubuntu-desktop xorg xserver-xorg-core clinfo;"
-    os.system(cmd)
 
     if enable_msdk == True:
         # Firmware update  
         cmd = "git clone https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git"
         os.system(cmd);
 
-        cmd = "cp linux-firmware/i915/skl_dmc_ver1_27.bin /lib/firmware/i915/.; "
-        cmd+= "rm -f /lib/firmware/i915/skl_dmc_ver1.bin; "
-        cmd+= "ln -s /lib/firmware/i915/skl_dmc_ver1_27.bin /lib/firmware/i915/skl_dmc_ver1.bin"
-        os.system(cmd)
+        if BUILD_TARGET == "BXT":
+            cmd = "cp linux-firmware/i915/bxt_dmc_ver1_07.bin /lib/firmware/i915/.; "
+            cmd+= "rm -f /lib/firmware/i915/bxt_dmc_ver1.bin; "
+            cmd+= "ln -s /lib/firmware/i915/bxt_dmc_ver1_07.bin /lib/firmware/i915/bxt_dmc_ver1.bin"
+        else:
+            cmd = "cp linux-firmware/i915/skl_dmc_ver1_27.bin /lib/firmware/i915/.; "
+            cmd+= "rm -f /lib/firmware/i915/skl_dmc_ver1.bin; "
+            cmd+= "ln -s /lib/firmware/i915/skl_dmc_ver1_27.bin /lib/firmware/i915/skl_dmc_ver1.bin"
 
-    # Install kernel
-    os.system("ukuu --install v4.14.16")
+        os.system(cmd)
 
     # Create installation path
     os.system("mkdir -p %s/build"%(WORKING_DIR))
@@ -201,9 +199,9 @@ if __name__ == "__main__":
 
         print "libyuv"
         if not os.path.exists("%s/libyuv"%(WORKING_DIR)): 
-	    cmd = "cd %s; git clone https://chromium.googlesource.com/libyuv/libyuv.git; "%(WORKING_DIR)
-	    print cmd
-	    os.system(cmd);
+            cmd = "cd %s; git clone https://chromium.googlesource.com/libyuv/libyuv.git; "%(WORKING_DIR)
+            print cmd
+            os.system(cmd);
 
         print "tbb"
         if not os.path.exists("%s/tbb"%(WORKING_DIR)): 
@@ -295,40 +293,36 @@ if __name__ == "__main__":
     print "************************************************************************"
 
     #add users to video group.  starting with sudo group members.  TODO: anyone else?
-    for username in grp.getgrnam("sudo").gr_mem:
-        cmd="usermod -a -G video %s"%(username)
-        print cmd
-        os.system(cmd)
     
-        if not os.path.exists("l_openvino_toolkit_p_2018.4.420"):
-            print_info("downloading Intel(R) Computer Vision SDK", loglevelcode.INFO) 
-            cmd="curl -# -O http://registrationcenter-download.intel.com/akdlm/irc_nas/14920/l_openvino_toolkit_p_2018.4.420.tgz"
-            print cmd
-            os.system(cmd)
-
-        print_info("installing Intel(R) Computer Vision SDK RC4", loglevelcode.INFO) 
-        cmd ="tar -xzf l_openvino_toolkit_p_2018.4.420.tgz;"
-        cmd+="cp silent.cfg l_openvino_toolkit_p_2018.4.420;"
-        cmd+="cd l_openvino_toolkit_p_2018.4.420;"
-	print "i'm here1"
-        cmd+="./install.sh -s silent.cfg; "
-        print "i'm here2"
+    if not os.path.exists("l_openvino_toolkit_p_2018.4.420"):
+        print_info("downloading Intel(R) Computer Vision SDK", loglevelcode.INFO) 
+        cmd="curl -# -O http://registrationcenter-download.intel.com/akdlm/irc_nas/14920/l_openvino_toolkit_p_2018.4.420.tgz"
         print cmd
         os.system(cmd)
 
+    print_info("installing Intel(R) Computer Vision SDK RC4", loglevelcode.INFO) 
+    cmd ="tar -xzf l_openvino_toolkit_p_2018.4.420.tgz;"
+    cmd+="cp silent.cfg l_openvino_toolkit_p_2018.4.420;"
+    cmd+="cd l_openvino_toolkit_p_2018.4.420;"
+    print "i'm here1"
+    cmd+="./install.sh -s silent.cfg; "
+    print "i'm here2"
+    print cmd
+    os.system(cmd)
 
-        print_info("installing Intel(R) OpenCL Neo driver", loglevelcode.INFO)
-        cmd = "mkdir -p %s/neo; "%(WORKING_DIR)
 
-        cmd+= "cd %s/neo; "%(WORKING_DIR)
-        cmd+= "wget https://github.com/intel/compute-runtime/releases/download/18.45.11804/intel-gmmlib_18.4.0.348_amd64.deb; "
-        cmd+= "wget https://github.com/intel/compute-runtime/releases/download/18.45.11804/intel-igc-core_18.44.1060_amd64.deb; "
-        cmd+= "wget https://github.com/intel/compute-runtime/releases/download/18.45.11804/intel-igc-opencl_18.44.1060_amd64.deb; "
-        cmd+= "wget https://github.com/intel/compute-runtime/releases/download/18.45.11804/intel-opencl_18.45.11804_amd64.deb;"
-        cmd+= "dpkg -i *.deb;"  
-        cmd+= "ldconfig;"
-        print cmd
-        os.system(cmd)
+    print_info("installing Intel(R) OpenCL Neo driver", loglevelcode.INFO)
+    cmd = "mkdir -p %s/neo; "%(WORKING_DIR)
+
+    cmd+= "cd %s/neo; "%(WORKING_DIR)
+    cmd+= "wget https://github.com/intel/compute-runtime/releases/download/18.45.11804/intel-gmmlib_18.4.0.348_amd64.deb; "
+    cmd+= "wget https://github.com/intel/compute-runtime/releases/download/18.45.11804/intel-igc-core_18.44.1060_amd64.deb; "
+    cmd+= "wget https://github.com/intel/compute-runtime/releases/download/18.45.11804/intel-igc-opencl_18.44.1060_amd64.deb; "
+    cmd+= "wget https://github.com/intel/compute-runtime/releases/download/18.45.11804/intel-opencl_18.45.11804_amd64.deb;"
+    cmd+= "dpkg -i *.deb;"  
+    cmd+= "ldconfig;"
+    print cmd
+    os.system(cmd)
 
     if enable_msdk == True:
         # Build and install Media SDK library and samples
@@ -373,6 +367,6 @@ if __name__ == "__main__":
         os.system(cmd)
 
     print "************************************************************************"
-    print "    Done, all installation, please reboot system !!! "
+    print "   Environment Setup is done, start to compile video analytics example !!! "
     print "************************************************************************"
 
