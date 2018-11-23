@@ -15,7 +15,6 @@
  * Workload balance between CPU and GPU is introduced.  you need to manual enable it by define ENABLE_WORKLOAD_BALANCE in main.cpp
  * Batch across differnt streams is introduced
  * MobileNetSSD as an example to show benfit of this architecture
-WW41
  * added VD+SFC which is able to do CSC from NV12 to ARGB on the fly with decoding. it can help save the memroy bandwidth
  * KCF acceleration with GPU, which is able to gain 4x performance boost compared to CPU only
 
@@ -23,6 +22,7 @@ WW41
  * Further improve the workload scheduing with Intel's telemtry library
  * Video Process before inference
  * Encoding after composition
+ * 1->N features
  
 ### Expected Usages:
 
@@ -62,12 +62,21 @@ WW41
 
 ## build
  * Ubuntu 16.04.3
- * define TEST_KCF_TRACK_WITH_GPU in main.cpp to enable KCF acceleration with GPU
    $ source env.sh
    $ mkdir build
    $ cd build
    $ cmake ..
    $ make
+
+
+if you want to enable more advanced features, please follow below steps:
+ * KCF tracking with GPU acceleration
+  - define TEST_KCF_TRACK_WITH_GPU in main.cpp to enable KCF acceleration with GPU
+  - recompile
+ * workload scheduler
+  - define ENABLE_WORKLOAD_BALANCE in main.cpp
+  - change NUM_OF_GPU_INFER macro definiton to 2
+  - recompile
 
 ## execution
 
