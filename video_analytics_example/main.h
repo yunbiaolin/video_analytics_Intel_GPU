@@ -72,6 +72,8 @@ static const char performance_counter_message[] = "Enables per-layer performance
 static const char performance_inference_message[] = "Enables inference performance report";
 /// @brief message for performance decode
 static const char performance_decode_message[] = "Enables decode performance report";
+/// @brief message for performance decode
+static const char pipeline_latency_message[] = "Enables pipeline latency report";
 /// @brief message for performance counters
 static const char threshold_message[] = "confidence threshold for bounding boxes 0-1";
 /// @brief message for batch size
@@ -138,6 +140,8 @@ DEFINE_bool(show, false, show_message);
 DEFINE_bool(pi, false, performance_inference_message);
 /// \brief Enable decode performance
 DEFINE_bool(pd, false, performance_decode_message);
+/// \brief Enable pipeline latency report
+DEFINE_bool(pl, false, pipeline_latency_message);
 /// \brief Enable inference
 DEFINE_int32(infer, 1, inference_message);
 /// \brief Enable inference perf details

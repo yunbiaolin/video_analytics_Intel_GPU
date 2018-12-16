@@ -378,6 +378,8 @@ void *DecodeThreadFunc(void *arg)
     mfxSyncPoint syncpDec;
     mfxSyncPoint syncpVPP;
 
+    struct timeval pipeStartTs = {0};
+
     int nIndexDec     = 0;
     int nIndexVPP_In  = 0;
     int nIndexVPP_In2 = 0;
@@ -412,6 +414,11 @@ void *DecodeThreadFunc(void *arg)
             }
             MSDK_BREAK_ON_ERROR(sts);
         }
+        if (FLAGS_pl)
+        {
+            gettimeofday(&pipeStartTs, NULL);
+        }
+        
         if (MFX_ERR_MORE_SURFACE == sts || MFX_ERR_NONE == sts)
         {
 recheck21:
@@ -487,6 +494,7 @@ recheck:
 			pSurface->Data.Locked +=1;				 
             srcTrackFrame->pmfxSurface = pSurface;
 			//std::cout<<"	  Push frame into tracking thread: "<<pSurface<<std::endl; 
+			srcTrackFrame->timestamp = pipeStartTs;
 
 		    dpipe_store(pDecConfig->dKCFpipe, srcTrackData);
            
@@ -642,7 +650,7 @@ recheck2:
                  #endif
                     // basic info
                     srcframe->imgpts     = srcframe->imgpts;
-                    srcframe->timestamp   = srcframe->timestamp;
+                    srcframe->timestamp   = pipeStartTs;
                     //srcframe->pixelformat = MFX_FOURCC_RGBP; //yuv420p;
                     srcframe->realwidth   = w;
                     srcframe->realheight  = h;
@@ -850,6 +858,12 @@ void *TrackerThreadFunc(void *arg)
             }
         }
 
+        if (FLAGS_pl){
+            struct timeval timestamp;
+            gettimeofday(&timestamp, NULL);
+            std::cout<< "Pipeline latency " << (timestamp.tv_sec - srcframe->timestamp.tv_sec) * 1000000 + timestamp.tv_usec - srcframe->timestamp.tv_usec << "(us)" << std::endl;
+        }
+
         // Get the Decode output surface, it is not Optimized way.
         pTrackerConfig->pmfxAllocator->Lock(pTrackerConfig->pmfxAllocator->pthis, 
                                               pSurface->Data.MemId, 
@@ -1012,6 +1026,11 @@ void *ScheduleThreadFunc(void *arg)
                          gettimeofday(&timestamp, NULL);
                          std::cout<< "Finish inference frame " << timestamp.tv_sec * 1000000 + timestamp.tv_usec << "(us) from channelID="<<objects[k].inputid<< " frameNo=" << objects[k].frameno<<std::endl;
                     }
+                 }
+                 if (FLAGS_pl){
+                     struct timeval timestamp;
+                     gettimeofday(&timestamp, NULL);
+                     std::cout<< "Pipeline latency " << (timestamp.tv_sec - srcframe->timestamp.tv_sec) * 1000000 + timestamp.tv_usec - srcframe->timestamp.tv_usec << "(us)" << std::endl;
                  }
                  if( Detector::INSERTIMG_GET == faceret && FLAGS_show){
                      pthread_mutex_lock(&mutexshow); 	
@@ -2086,6 +2105,7 @@ void App_ShowUsage()
     std::cout << "\t\t-dec_postproc <val>     " << dec_postproc_message << std::endl;
     std::cout << "\t\t-pi     " << performance_inference_message<< std::endl;
     std::cout << "\t\t-pd     " << performance_decode_message << std::endl;
+    std::cout << "\t\t-pl     " << pipeline_latency_message << std::endl;
     std::cout << "\t\t-pv     " << perf_details_message << std::endl;
     std::cout << "\t\t-infer  <val>    " << inference_message << std::endl;
   
