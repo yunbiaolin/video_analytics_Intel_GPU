@@ -29,6 +29,7 @@
 #include <semaphore.h>
 #include <vector>
 #include <queue>
+#include <signal.h>
 
 #include <pthread.h>  
 #include <unistd.h>  
@@ -197,6 +198,11 @@ void App_ShowUsage(void);
 mfxStatus WriteRawFrameToMemory(mfxFrameSurface1* pSurface, int dest_w, int dest_h, unsigned char* dest, mfxU32 fourCC);
 cv::Mat createMat(unsigned char *rawData, unsigned int dimX, unsigned int dimY);
 
+// handle to end the process
+void sigint_hanlder(int s)
+{
+    grunning = false;
+}
 
 // ================= Display Thread =======
 // in current version, each grids with the same size (wxh)
@@ -1989,18 +1995,19 @@ int main(int argc, char *argv[])
         pthread_create(&threadid, NULL, InferThreadFunc, (void *)(pInferThreadConfig));	
         vInferThreads.push_back(threadid) ; 
     }
-  
 
-    while(true){
-        std::cout << "Enter q to quite: " ;
-        int c=getchar();
-        if (c=='q' || c=='Q'){
-            grunning=false;
-            break;
-	}
-    }
+    // set the handler of ctrl-c
+    struct sigaction sigIntHandler;
+
+    sigIntHandler.sa_handler = sigint_hanlder;
+    sigemptyset(&sigIntHandler.sa_mask);
+    sigIntHandler.sa_flags = 0;
+
+    sigaction(SIGINT, &sigIntHandler, NULL);
+
+    pause();
+    
     grunning=false;
- 
     
     for(int nLoop=0; nLoop < NUM_OF_GPU_INFER; nLoop++){
         sem_post(&gsemtInfer[nLoop]);
