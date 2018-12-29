@@ -57,6 +57,39 @@ FIND_PATH(AVFORMAT_INCLUDE_DIR
     ffmpeg
 )
 
+FIND_PATH(SWS_INCLUDE_DIR
+  NAMES
+    swscale.h
+  PATHS
+    /usr/include
+    /usr/include/x86_64-linux-gnu
+    /usr/local/include
+    /opt/local/include
+    /local/include
+    /mingw/include
+    /opt/include
+    /sw/include
+  PATH_SUFFIXES
+    libavformat
+    ffmpeg
+)
+
+FIND_LIBRARY(SWS_LIBRARY
+  NAMES
+    swscale
+  PATHS
+    /usr/lib
+    /usr/lib/x86_64-linux-gnu
+    /usr/local/lib
+    /opt/local/lib
+    /sw/lib
+    /local/lib
+	/local/bin
+	/mingw/bin
+    /mingw/lib
+	/bin
+)
+
 FIND_LIBRARY(AVUTIL_LIBRARY
   NAMES
     avutil
@@ -112,6 +145,7 @@ SET(FFMPEG_INCLUDE_DIRS
 #  ${AVUTIL_INCLUDE_DIR}
   ${AVCODEC_INCLUDE_DIR}
   ${AVFORMAT_INCLUDE_DIR}
+  ${SWS_INCLUDE_DIR}
 )
 
 SET(FFMPEG_LIBRARIES)
@@ -136,6 +170,13 @@ IF(AVFORMAT_LIBRARY)
     ${AVFORMAT_LIBRARY}
   )
 ENDIF(AVFORMAT_LIBRARY)
+
+IF(SWS_LIBRARY)
+  SET(FFMPEG_LIBRARIES
+    ${FFMPEG_LIBRARIES}
+    ${SWS_LIBRARY}
+  )
+ENDIF(SWS_LIBRARY)
 
 IF(FFMPEG_INCLUDE_DIRS AND FFMPEG_LIBRARIES)
    SET(FFMPEG_FOUND TRUE)

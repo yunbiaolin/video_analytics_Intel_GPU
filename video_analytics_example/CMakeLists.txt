@@ -13,6 +13,7 @@ set(CPU_EXENTION_LIB ${CMAKE_SOURCE_DIR}/lib)
 
 include(cmake/FindLibYuv.cmake) 
 include(cmake/FindXCB.cmake)
+include(cmake/FindFFmpeg.cmake)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -g -O0 -I${CMAKE_SOURCE_DIR}/common -I${CMAKE_SOURCE_DIR}/runtime/include -I${MFX_INCLUDE}  -I${CPU_EXENTION_INCLUDE} -I$ENV{DL_SDK_INCLUDE} -I${OPENCV_INCLUDE} -I../../common")
 set(ENABLE_EXPORTS false)
@@ -24,6 +25,6 @@ ${CPU_EXENTION_LIB} ${CMAKE_SOURCE_DIR}/runtime/lib/x64)
 add_executable(video_analytics_example  main.cpp dpipe.cpp XCBShow.cpp 
 detector.cpp  SetupSurface.cpp fhog.cpp kcftracker.cpp intelscalar.cpp)
 target_link_libraries(video_analytics_example X11 VAITutils gflags_static 
-igfxcmrt64 mfx va va-drm pthread rt dl opencv_core opencv_video opencv_videoio opencv_imgproc opencv_photo opencv_highgui opencv_imgcodecs inference_engine cpu_extension  ${LIBYUV_LIBRARY} jpeg ${SDL_LIBRARY} ${XCB_LIBRARIES})
+igfxcmrt64 mfx va va-drm pthread rt dl opencv_core opencv_video opencv_videoio opencv_imgproc opencv_photo opencv_highgui opencv_imgcodecs inference_engine cpu_extension  ${LIBYUV_LIBRARY} ${FFMPEG_LIBRARIES} jpeg ${SDL_LIBRARY} ${XCB_LIBRARIES})
 
 

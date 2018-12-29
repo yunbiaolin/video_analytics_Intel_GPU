@@ -141,6 +141,7 @@ if __name__ == "__main__":
     cmd+="apt-get -y install libopencv-dev checkinstall pkg-config libgflags-dev libxcb-xv0-dev libomp-dev;"
     cmd+="apt-get -y remove xserver-xorg-core-hwe-16.04;"
     cmd+="apt-get -y install ubuntu-desktop xorg xserver-xorg-core clinfo;"
+    cmd+="apt-get -y install ffmpeg;"
     os.system(cmd)
 
     if enable_msdk == True:

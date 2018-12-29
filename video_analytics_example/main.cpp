@@ -46,6 +46,19 @@
 #include "dpipe.h"
 
 // =================================================================
+// FFMPEG Interface
+// =================================================================
+extern "C"
+{
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/log.h>
+#include <libavutil/avutil.h>
+#include <libswscale/swscale.h>
+}
+#define USE_FFMPEG 0
+
+// =================================================================
 // Inference Engine Interface
 // =================================================================
 
@@ -147,6 +160,7 @@ public:
     std::chrono::high_resolution_clock::time_point tmStart;
     std::chrono::high_resolution_clock::time_point tmEnd;
 
+    std::string input_filename;
 };
 
 
@@ -697,6 +711,187 @@ recheck2:
 
 }
 
+// ================= FFMPEG Decoding Thread =======
+void *FFDecodeThreadFunc(void *arg)
+{
+	AVFormatContext	*pFormatCtx;
+	AVCodecContext	*pCodecCtx;
+	AVCodec			*pCodec;
+	AVFrame	*pFrame,*pFrameRGB;
+	uint8_t *out_buffer;
+	AVPacket *packet;
+	int y_size;
+	int ret, got_picture;
+	struct SwsContext *img_convert_ctx;
+	int videoindex, loop_cnt, frame_cnt;
+
+    struct DecThreadConfig *pDecConfig = (DecThreadConfig *) arg;
+    if( NULL == pDecConfig)
+    {
+        printf("Failed Decode Thread Configuration.\n");
+        return (void*)-1;
+    }
+    printf(">channel(%d) Initialized.\n", pDecConfig->nChannel);
+
+	pFormatCtx = avformat_alloc_context();
+ 	if(avformat_open_input(&pFormatCtx, pDecConfig->input_filename.c_str(), NULL, NULL) != 0)
+    {     		
+        printf("Couldn't open input stream.\n");
+		return (void*)-1;
+	}
+	if(avformat_find_stream_info(pFormatCtx, NULL) < 0) // sniff
+    {
+		printf("Couldn't find stream information.\n");
+		return (void*)-1;
+	}
+
+	videoindex = -1;
+	for(int i=0; i<pFormatCtx->nb_streams; i++)
+    {
+		if(pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO){
+			videoindex = i;
+			break;
+		}
+    }
+	if(videoindex == -1){
+		printf("Didn't find a video stream.\n");
+		return (void*)-1;
+	}
+ 
+	pCodecCtx = pFormatCtx->streams[videoindex]->codec;
+	pCodec = avcodec_find_decoder(pCodecCtx->codec_id); // find ffmpeg decoder
+	if(pCodec == NULL){
+		printf("Codec not found.\n");
+		return (void*)-1;
+	}
+	if(avcodec_open2(pCodecCtx, pCodec, NULL) < 0){ // initialize AVCodecContext
+		printf("Could not open codec.\n");
+		return (void*)-1;
+	}
+ 
+
+    /* printf information of the input video
+    printf("AVFormatContext AVInputFormat name = %s  \n",pFormatCtx->iformat->name);
+    printf("Number of elements in AVFormatContext.streams = %d  \n",pFormatCtx->nb_streams);
+    printf("Duration of the stream, in AV_TIME_BASE fractional = %d  \n",pFormatCtx->duration);
+    printf("Total stream bitrate in   %d  bit/s \n",pFormatCtx->bit_rate);
+    printf("picture width   =  %d \n",pCodecCtx->width);
+    printf("picture height  =  %d \n",pCodecCtx->height); */
+
+	printf("--------------- File Information ----------------\n");
+	av_dump_format(pFormatCtx, 0, pDecConfig->input_filename.c_str(), 0);
+	printf("-------------------------------------------------\n");
+
+    int w = gNet_input_width;
+    int h = gNet_input_height;
+	pFrame = av_frame_alloc(); // alloc frame buffer
+	pFrameRGB = av_frame_alloc();
+	out_buffer = (uint8_t *)av_malloc(avpicture_get_size(AV_PIX_FMT_GBRP, w, h));
+	avpicture_fill((AVPicture *)pFrameRGB, out_buffer, AV_PIX_FMT_GBRP, w, h); // mount out_buffer to pFrameRGB
+
+	img_convert_ctx = sws_getContext(pCodecCtx->width, pCodecCtx->height, pCodecCtx->pix_fmt, 
+		w, h, AV_PIX_FMT_GBRP, SWS_BICUBIC, NULL, NULL, NULL); // init SwsContext
+ 
+	packet = (AVPacket *)av_malloc(sizeof(AVPacket));
+
+    pDecConfig->tmStart = std::chrono::high_resolution_clock::now();
+
+    loop_cnt = 0;
+    while (1)
+    {
+        frame_cnt = 0;
+        while (av_read_frame(pFormatCtx, packet) >= 0)
+        {
+            if (grunning == false) {goto ff_exit;};
+            if (packet->stream_index == videoindex)
+            {
+                //printf("[c%d][l%d]bit stream[%d]=%p: %x, %x, %x, %x, %x, %x, %x, %x\n", pDecConfig->nChannel, loop_cnt, frame_cnt, packet->data,
+                //    packet->data[0],packet->data[1],packet->data[2],packet->data[3],packet->data[4],packet->data[5],packet->data[6],packet->data[7]);
+                ret = avcodec_decode_video2(pCodecCtx, pFrame, &got_picture, packet);  // decode one frame
+                if (ret < 0)
+                {
+                    printf("Decode Error.\n");
+                    return (void*)-1;
+                }
+                if (got_picture)
+                {
+                    // scale
+                    sws_scale(img_convert_ctx, (const uint8_t* const*)pFrame->data, pFrame->linesize, 0, pCodecCtx->height, 
+                        pFrameRGB->data, pFrameRGB->linesize); // scaling
+                    //printf("[c%d][l%d]Decoded frame index: %d\n", pDecConfig->nChannel, loop_cnt, frame_cnt);
+                    frame_cnt++;
+                    pDecConfig->nFrameProcessed ++;
+
+                    // get pipe
+                    dpipe_buffer_t  *srcdata  = NULL;
+                    vsource_frame_t *srcframe = NULL;
+                    do {
+                        srcdata = dpipe_get(pDecConfig->dpipe);
+                    } while (srcdata == NULL);
+                    srcframe = (vsource_frame_t*) srcdata->pointer;
+                    
+                    // copy R
+                    unsigned char * pSrc = pFrameRGB->data[2]; //AV_PIX_FMT_GBRP
+                    unsigned char * pDst = srcframe->imgbuf;
+                    for (int i = 0; i < w; i++)
+                    {
+                       memcpy(pDst + i*w, pSrc + i*pFrameRGB->linesize[0], w);
+                    }
+
+                    // copy G
+                    pSrc = pFrameRGB->data[0]; //AV_PIX_FMT_GBRP
+                    pDst = srcframe->imgbuf + w*h;
+                    for(int i = 0; i < h; i++)
+                    {
+                       memcpy(pDst  + i*w, pSrc + i*pFrameRGB->linesize[1], w);
+                    }
+
+                    // copy B
+                    pSrc = pFrameRGB->data[1]; //AV_PIX_FMT_GBRP
+                    pDst = srcframe->imgbuf + 2*w*h;
+                    for(int i = 0; i < h; i++)
+                    {
+                        memcpy(pDst  + i*w, pSrc + i*pFrameRGB->linesize[2], w);
+                    }
+
+                    // put pipe
+                    srcframe->channel  = pDecConfig->nChannel;
+                    srcframe->frameno  = pDecConfig->nFrameProcessed;
+                    srcframe->realwidth   = w;
+                    srcframe->realheight  = h;
+                    srcframe->realstride  = w;
+                    srcframe->realsize = w * h * 3;
+                    dpipe_store(pDecConfig->dpipe, srcdata);
+                    sem_post(&gNewtaskAvaiable);                    
+                }
+            }
+            av_free_packet(packet);
+        }
+        
+        // restart the playback
+        avcodec_close(pCodecCtx);
+        avformat_close_input(&pFormatCtx);
+        
+        avformat_open_input(&pFormatCtx, pDecConfig->input_filename.c_str(), NULL, NULL);
+        avformat_find_stream_info(pFormatCtx, NULL);
+        pCodecCtx = pFormatCtx->streams[videoindex]->codec;
+	    pCodec = avcodec_find_decoder(pCodecCtx->codec_id);
+	    avcodec_open2(pCodecCtx, pCodec, NULL);
+
+        loop_cnt ++;
+    }
+
+    pDecConfig->tmEnd = std::chrono::high_resolution_clock::now();
+
+ff_exit:
+	sws_freeContext(img_convert_ctx);
+	av_frame_free(&pFrameRGB);
+	av_frame_free(&pFrame);
+	avcodec_close(pCodecCtx);
+	avformat_close_input(&pFormatCtx);
+
+    return (void*)0;
+}
 
 #ifdef TEST_KCF_TRACK_WITH_GPU
 #define MAX_NUM_TRACK_OBJECT 20
@@ -1534,6 +1729,32 @@ int main(int argc, char *argv[])
     bool no_more_data = false;
     int totalFrames = 0;
 
+#if USE_FFMPEG
+    // =================================================================
+    // Use FFMPEG SW decoding and scaling
+
+    av_log(NULL, AV_LOG_WARNING, "====== use FFMPEG software decoder ======\n");
+    av_register_all();
+
+    for(int nLoop=0; nLoop< FLAGS_c; nLoop++)
+    {
+        DecThreadConfig *pDecThreadConfig = new DecThreadConfig();
+        memset(pDecThreadConfig, 0, sizeof(DecThreadConfig));
+        pDecThreadConfig->totalDecNum            = FLAGS_fr;
+        pDecThreadConfig->input_filename         = input_filename[nLoop];
+        pDecThreadConfig->nChannel               = nLoop;
+        pDecThreadConfig->nFPS                   = 1;//30/pDecThreadConfig->nFPS;
+        pDecThreadConfig->bStartCount            = false;
+        pDecThreadConfig->nFrameProcessed        = 0;
+        pDecThreadConfig->dpipe                  = dpipe[nLoop];
+
+        vpDecThradConfig.push_back(pDecThreadConfig);
+
+        pthread_t threadid;
+        pthread_create(&threadid, NULL, FFDecodeThreadFunc, (void *)(pDecThreadConfig));
+        vDecThreads.push_back(threadid) ; 
+    }
+#else
     // =================================================================
     // Intel Media SDK
     //
@@ -1977,6 +2198,7 @@ int main(int argc, char *argv[])
 		sem_init(&gDetectResultAvaiable[i],0,0);
     }
  #endif
+#endif
 
   // Initialize scheduler thread
     {
@@ -2062,6 +2284,7 @@ int main(int argc, char *argv[])
 
 exit_here:
 
+#if !USE_FFMPEG
     for(int nLoop=0; nLoop< FLAGS_c; nLoop++)
     {
         fclose(f_i[nLoop]);
@@ -2072,6 +2295,7 @@ exit_here:
         MSDK_SAFE_DELETE_ARRAY(pmfxVPP_Out_Surfaces[nLoop]);
         MSDK_SAFE_DELETE_ARRAY(mfxBS[nLoop].Data);
     }
+#endif
 
     sem_destroy(&g_semtshow);
     sem_destroy(&gNewtaskAvaiable);
