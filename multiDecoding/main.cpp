@@ -119,8 +119,18 @@ static int vp_ratio = 5;
 // Performance information
 int total_fps;
 
-void App_ShowUsage(void);
 mfxStatus WriteRawFrameToMemory(mfxFrameSurface1* pSurface, int dest_w, int dest_h, unsigned char* dest, mfxU32 fourCC);
+
+void App_ShowUsage(void)
+{
+    printf("Usage: multichannel_decode -i input.264 [-r vp_ratio] [-c channel_number] [-b batch_num]\n");
+    printf("           -r vp_ratio: the ratio of decoded frames to vp frames, e.g., -r 2 means doing vp every other frame\n");
+    printf("                        5 by default\n");
+    printf("                        0 means no vp\n");
+    printf("           -c channel_number: number of decoding channels, default value is 1\n");
+    printf("           -b batch_num: number of frames in batch decoding\n");
+    printf("                         0 by default, meaning every decoding thread runs freely\n");
+}
 
 // handle to end the process
 void sigint_hanlder(int s)
@@ -375,7 +385,7 @@ int main(int argc, char *argv[])
     int c;
     int channelNum = 1;
     std::string input_filename;
-    while ((c = getopt (argc, argv, "c:i:b:r:")) != -1)
+    while ((c = getopt (argc, argv, "c:i:b:r:h")) != -1)
     {
     switch (c)
       {
@@ -392,9 +402,19 @@ int main(int argc, char *argv[])
         vp_ratio = atoi(optarg);
         need_vp = (vp_ratio != 0);
         break;
+      case 'h':
+        App_ShowUsage();
+        exit(0);
       default:
         abort ();
       }
+    }
+    
+    if (input_filename.empty())
+    {
+        printf("Missing input file name!!!!!!!\n");
+        App_ShowUsage();
+        exit(0);
     }
 
     std::vector<pthread_t>    vDecThreads;
