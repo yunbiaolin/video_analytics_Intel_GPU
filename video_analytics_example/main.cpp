@@ -616,17 +616,11 @@ recheck2:
                             sts = pDecConfig->pmfxSession->SyncOperation(syncpENC, 60000); /* Encoder's Sync */
                             //MSDK_CHECK_RESULT(sts, MFX_ERR_NONE, sts);
 
-                            if(FILE *m_dump_bitstream = std::fopen("m_dump_bitstream.jpeg", "wb"))
+                            if(FILE *m_dump_bitstream_1 = std::fopen(FLAGS_jpeg_output_file.c_str(), "wb"))
                             {
-                                std::fwrite(mfxBS.Data, sizeof(char),mfxBS.DataLength, m_dump_bitstream);
-                                std::fclose(m_dump_bitstream);
+                                std::fwrite(mfxBS.Data, sizeof(char),mfxBS.DataLength, m_dump_bitstream_1);
+                                std::fclose(m_dump_bitstream_1);
                             }
-
-//                            if(FILE *m_dump_bitstream_1 = std::fopen("m_dump_bitstream_1.mjpeg", "ab+"))
-//                            {
-//                                std::fwrite(mfxBS.Data, sizeof(char),mfxBS.DataLength, m_dump_bitstream_1);
-//                                std::fclose(m_dump_bitstream_1);
-//                            }
 
                             delete mfxBS.Data;
                         }
@@ -2448,6 +2442,8 @@ void App_ShowUsage()
     std::cout << "\t\t-batch <val> " << batch_message << std::endl;
     std::cout << "\t\t-dec_postproc <val>     " << dec_postproc_message << std::endl;
     std::cout << "\t\t-jpeg_enc <on/off>     " << jpeg_enc_message << std::endl;
+    std::cout << "\t\t-jpeg_output_file <file_name>     " << jpeg_output_file_message << std::endl;
+
     std::cout << "\t\t-pi     " << performance_inference_message<< std::endl;
     std::cout << "\t\t-pd     " << performance_decode_message << std::endl;
     std::cout << "\t\t-pl     " << pipeline_latency_message << std::endl;

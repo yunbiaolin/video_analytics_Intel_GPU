@@ -88,8 +88,10 @@ static const char fps_message[] = "Number of frame rates of inference for each s
 static const char show_message[] = "Show inference result in display GRID, maxium is 5 for now";
 /// @brief message for show result
 static const char dec_postproc_message[] = "VDBOX+SFC case: resize after decoder using direct pipe. Default - auto; use off option to do separate dec+vpp";
-/// @brief message for show result
+/// @brief message for jpeg encoding on/off
 static const char jpeg_enc_message[] = "Enabled Jpeg encoder after (Decoder+VPP). Works only if inference disabled \"-infer 0\" ";
+/// @brief message for jpeg encoding: set output file
+static const char jpeg_output_file_message[] = "Jpeg encoder's output file. Works only if \"-jpeg_enc on\" option enabled";
 /// @brief message for decode 
 static const char decode_message[] = "enable decode (true/false). Default - enable";
 /// @brief message for inference
@@ -126,6 +128,8 @@ DEFINE_string(t, "SSD", infer_type_message);
 DEFINE_string(dec_postproc, "off", dec_postproc_message);
 /// \brief enable jpeg encoder
 DEFINE_string(jpeg_enc, "off", jpeg_enc_message);
+/// \brief Jpeg encoder's output file
+DEFINE_string(jpeg_output_file, "off", jpeg_output_file_message);
 /// \brief Enable per-layer performance report
 DEFINE_bool(pc, false, performance_counter_message);
 /// \brief Enable per-layer performance report
