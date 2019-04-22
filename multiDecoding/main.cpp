@@ -437,7 +437,7 @@ recheck2:
 
 }
 
-#define NUM_OF_CHANNELS 48 // maximum channel number it supports
+#define NUM_OF_CHANNELS 60 // maximum channel number it supports
 
 int main(int argc, char *argv[])
 {
