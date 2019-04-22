@@ -35,6 +35,8 @@
 #include <semaphore.h>
 #include <chrono>
 
+#include <string>
+#include <sstream>
 // =================================================================
 // Intel Media SDK
 // =================================================================
@@ -68,6 +70,9 @@ using namespace std;
 #define FASTCOPY_DECODED_FRAME 0
 #define SHOW_FASTCOPY_FRAME 0
 
+#define VP_OUTPUT_WIDTH 300
+#define VP_OUTPUT_HEIGHT 300
+
 using namespace std;
 
 static pthread_mutex_t s_countermutex;
@@ -90,6 +95,7 @@ public:
     };
     FILE *f_i;
     MFXVideoDECODE *pmfxDEC;
+    MFXVideoENCODE *pmfxENC;
     mfxU16 nDecSurfNum;
     mfxU16 nVPP_In_SurfNum;
     mfxU16 nVPP_Out_SurfNum;
@@ -115,6 +121,8 @@ int grunning = true;
 static int batch_num = 0;
 static bool need_vp = true;
 static int vp_ratio = 5;
+static bool jpeg_encoder = false;
+static bool write_jpeg = false;
 
 // Performance information
 int total_fps;
@@ -130,6 +138,8 @@ void App_ShowUsage(void)
     printf("           -c channel_number: number of decoding channels, default value is 1\n");
     printf("           -b batch_num: number of frames in batch decoding\n");
     printf("                         0 by default, meaning every decoding thread runs freely\n");
+    printf("           -j: enable jpeg encoder\n");
+    printf("           -w: dump jpeg encoder output\n");
 }
 
 // handle to end the process
@@ -147,6 +157,7 @@ void *DecodeThreadFunc(void *arg)
     mfxStatus sts = MFX_ERR_NONE;
     mfxSyncPoint syncpDec;
     mfxSyncPoint syncpVPP;
+    mfxSyncPoint syncpENC;
 
     struct timeval pipeStartTs = {0};
 
@@ -332,8 +343,57 @@ recheck2:
   
                  if (MFX_ERR_NONE == sts)
                  { 
-                    sts = pDecConfig->pmfxSession->SyncOperation(syncpVPP, 60000); // Synchronize. Wait until decoded frame is ready
-                    
+                    if(jpeg_encoder )
+                    {
+                        /* output bitstream allcoation */
+                        mfxBitstream mfxBS;
+                        memset(&mfxBS, 0, sizeof(mfxBS));
+                        mfxBS.MaxLength = VP_OUTPUT_WIDTH*VP_OUTPUT_HEIGHT*4;
+                        mfxBS.Data = new mfxU8[mfxBS.MaxLength];
+                        if( NULL == mfxBS.Data)
+                        {
+                            std::cout << std::endl << "Failed allocate output bitstream" << std::endl;
+                            return NULL;
+                        }
+
+                        sts = pDecConfig->pmfxENC->EncodeFrameAsync(NULL, pDecConfig->pmfxVPP_Out_Surfaces[nIndexVPP_Out], &mfxBS, &syncpENC);
+
+                        if (MFX_ERR_NONE < sts && !syncpENC) // repeat the call if warning and no output
+                        {
+                            if (MFX_WRN_DEVICE_BUSY == sts)
+                            {
+                                std::cout << std::endl << "> warning: MFX_WRN_DEVICE_BUSY" << std::endl;
+                                usleep(1000); // wait if device is busy
+                            }
+                        }
+                        else if (MFX_ERR_NONE < sts && syncpENC)
+                        {
+                            sts = MFX_ERR_NONE; // ignore warnings if output is available
+                        }
+
+                        if (MFX_ERR_NONE == sts)
+                        {
+                            sts = pDecConfig->pmfxSession->SyncOperation(syncpENC, 60000); /* Encoder's Sync */
+                            //MSDK_CHECK_RESULT(sts, MFX_ERR_NONE, sts);
+                            if (write_jpeg)
+                            {
+                                stringstream jpeg_output_file;
+                                jpeg_output_file << "output_" << pDecConfig->nChannel << "_" << nFrame << ".jpeg";
+
+                                if(FILE *m_dump_bitstream_1 = std::fopen(jpeg_output_file.str().c_str(), "wb"))
+                                {
+                                    std::fwrite(mfxBS.Data, sizeof(char),mfxBS.DataLength, m_dump_bitstream_1);
+                                    std::fclose(m_dump_bitstream_1);
+                                }
+                            }
+
+                            delete mfxBS.Data;
+                        }
+                    }
+                    else
+                    {
+                        sts = pDecConfig->pmfxSession->SyncOperation(syncpVPP, 60000); // Synchronize. Wait until decoded frame is ready
+                    }
                  }
                 
             }// nframe % vp_ratio
@@ -385,7 +445,7 @@ int main(int argc, char *argv[])
     int c;
     int channelNum = 1;
     std::string input_filename;
-    while ((c = getopt (argc, argv, "c:i:b:r:h")) != -1)
+    while ((c = getopt (argc, argv, "c:i:b:r:jwh")) != -1)
     {
     switch (c)
       {
@@ -402,6 +462,12 @@ int main(int argc, char *argv[])
         vp_ratio = atoi(optarg);
         need_vp = (vp_ratio != 0);
         break;
+      case 'j':
+        jpeg_encoder = true;
+        break;
+      case 'w':
+        write_jpeg = true;
+        break;        
       case 'h':
         App_ShowUsage();
         exit(0);
@@ -458,6 +524,7 @@ int main(int argc, char *argv[])
 
     std::vector<MFXVideoDECODE *>    vpMFXDec;
     std::vector<MFXVideoVPP *>       vpMFXVpp;
+    std::vector<MFXVideoENCODE *>    vpMFXEncode;
     
     int last_counter = 0;
 
@@ -489,7 +556,9 @@ int main(int argc, char *argv[])
         vpMFXDec.push_back(pmfxDEC);
         MFXVideoVPP    *pmfxVPP = new MFXVideoVPP(mfxSession[nLoop]);
         vpMFXVpp.push_back(pmfxVPP);
-        if( pmfxDEC == NULL || pmfxVPP == NULL ){
+        MFXVideoENCODE *pmfxENC = new MFXVideoENCODE(mfxSession[nLoop]);
+        vpMFXEncode.push_back(pmfxENC);
+        if( pmfxDEC == NULL || pmfxVPP == NULL || pmfxENC == NULL){
             std::cout << "\t. Failed to initialize decode session" << std::endl;
             goto exit_here;
         }
@@ -501,6 +570,7 @@ int main(int argc, char *argv[])
         std::cout << "\t. Start preparing video parameters for decoding." << std::endl;
         mfxExtDecVideoProcessing DecoderPostProcessing;
         mfxVideoParam DecParams;
+        mfxVideoParam EncParams;
         bool VD_LP_resize = false; // default value is for VDBOX+SFC case
    
         memset(&DecParams, 0, sizeof(DecParams));
@@ -575,8 +645,8 @@ int main(int argc, char *argv[])
         VPPParams.vpp.Out.ChromaFormat  = chromaformat_VPP_Out;
         VPPParams.vpp.Out.CropX         = 0;
         VPPParams.vpp.Out.CropY         = 0;
-        VPPParams.vpp.Out.CropW         = 300; // SSD: 300, YOLO-tiny: 448
-        VPPParams.vpp.Out.CropH         = 300;    // SSD: 300, YOLO-tiny: 448
+        VPPParams.vpp.Out.CropW         = VP_OUTPUT_WIDTH; // SSD: 300, YOLO-tiny: 448
+        VPPParams.vpp.Out.CropH         = VP_OUTPUT_HEIGHT;    // SSD: 300, YOLO-tiny: 448
         VPPParams.vpp.Out.PicStruct     = MFX_PICSTRUCT_PROGRESSIVE;
         VPPParams.vpp.Out.FrameRateExtN = 30;
         VPPParams.vpp.Out.FrameRateExtD = 1;
@@ -592,6 +662,17 @@ int main(int argc, char *argv[])
                   << " -> ( " << VPPParams.vpp.Out.CropW << " x " << VPPParams.vpp.Out.CropH << " )" << ", ( " << VPPParams.vpp.Out.Width << " x " << VPPParams.vpp.Out.Height << " )" << std::endl;
 
         std::cout << "\t. Done preparing VPP In/ Out parameters." << std::endl;
+        
+        /* If enabled JPEG encoding enabled:
+         * VPP works for resize only
+         * CSC NV12->RGBP do not required (as no inference)
+         * And inference disabled
+         * */
+        if (jpeg_encoder)
+        {
+            VPPParams.vpp.Out.FourCC        = MFX_FOURCC_NV12;
+            VPPParams.vpp.Out.ChromaFormat  = MFX_CHROMAFORMAT_YUV420;
+        }
 
         /* LP size */
         if (VD_LP_resize)
@@ -795,6 +876,52 @@ int main(int argc, char *argv[])
         {
              std::cout<<"vpp:handle: "<<pmfxVPP_In_Surfaces[nLoop][i]<<std::endl;
         }
+        
+        // [ENCODER]
+        if (jpeg_encoder)
+        {
+            memset(&EncParams, 0, sizeof(EncParams));
+            EncParams.mfx.CodecId = MFX_CODEC_JPEG;
+            EncParams.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
+
+            // frame info parameters
+            EncParams.mfx.FrameInfo.FourCC       = MFX_FOURCC_NV12;
+            EncParams.mfx.FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+            EncParams.mfx.FrameInfo.PicStruct    = MFX_PICSTRUCT_PROGRESSIVE;
+
+            EncParams.mfx.FrameInfo.Width  = VPPParams.vpp.Out.Width;
+            EncParams.mfx.FrameInfo.Height = VPPParams.vpp.Out.Height;
+
+            EncParams.mfx.FrameInfo.CropX = VPPParams.vpp.Out.CropX;
+            EncParams.mfx.FrameInfo.CropY = VPPParams.vpp.Out.CropY;
+            EncParams.mfx.FrameInfo.CropW = VPPParams.vpp.Out.CropW;
+            EncParams.mfx.FrameInfo.CropH = VPPParams.vpp.Out.CropH;
+
+            EncParams.mfx.Interleaved = 1;
+            EncParams.mfx.Quality = 95;
+            EncParams.mfx.RestartInterval = 0;
+            EncParams.mfx.CodecProfile = MFX_PROFILE_JPEG_BASELINE;
+            EncParams.mfx.NumThread = 1;
+            memset(&EncParams.mfx.reserved5,0,sizeof(EncParams.mfx.reserved5));
+
+            EncParams.AsyncDepth = 1;
+
+            mfxFrameAllocRequest EncRequest = { 0 };
+            sts = pmfxENC->QueryIOSurf(&EncParams, &EncRequest);
+            MSDK_IGNORE_MFX_STS(sts, MFX_WRN_PARTIAL_ACCELERATION);
+
+            // Initialize the Media SDK encoder
+            std::cout << "\t. Init Intel Media SDK Encoder" << std::endl;
+
+            sts = pmfxENC->Init(&EncParams);
+            MSDK_IGNORE_MFX_STS(sts, MFX_WRN_PARTIAL_ACCELERATION);
+
+            if(MFX_ERR_NONE > sts)
+            {
+                MSDK_PRINT_RET_MSG(sts);
+                goto exit_here;
+            }
+        }
 
         //int decOutputFile = open("./dump.nv12", O_APPEND | O_CREAT, S_IRWXO);
 
@@ -803,6 +930,7 @@ int main(int argc, char *argv[])
         pDecThreadConfig->f_i                    = f_i[nLoop];
         pDecThreadConfig->pmfxDEC                = pmfxDEC;
         pDecThreadConfig->pmfxVPP                = pmfxVPP;
+        pDecThreadConfig->pmfxENC                = pmfxENC;
         pDecThreadConfig->nDecSurfNum            = nDecSurfNum;
         pDecThreadConfig->nVPP_In_SurfNum        = nVPP_In_SurfNum;
         pDecThreadConfig->nVPP_Out_SurfNum       = nVPP_Out_SurfNum;
