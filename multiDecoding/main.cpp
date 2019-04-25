@@ -70,8 +70,8 @@ using namespace std;
 #define FASTCOPY_DECODED_FRAME 0
 #define SHOW_FASTCOPY_FRAME 0
 
-#define VP_OUTPUT_WIDTH 300
-#define VP_OUTPUT_HEIGHT 300
+#define VP_OUTPUT_WIDTH 1000
+#define VP_OUTPUT_HEIGHT 500
 
 using namespace std;
 
@@ -779,7 +779,7 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        mfxU16 nVPP_In_SurfNum = VPP_In_Response.NumFrameActual;
+        mfxU16 nVPP_In_SurfNum = VPP_In_Response.NumFrameActual * 2;
 
         std::cout << "\t\t. VPP In Surface Actual Number: " << nVPP_In_SurfNum << std::endl;
 
