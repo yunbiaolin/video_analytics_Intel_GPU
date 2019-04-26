@@ -12,7 +12,7 @@ set(ENABLE_EXPORTS false)
 link_directories( ${MFX_LIB_OPENSOURCE})
 link_directories(/usr/lib/x86_64-linux-gnu/)
 link_directories(/opt/intel/common/mdf/lib64/)
-add_executable(multichannel_decode  main.cpp fastcopy.cpp)
+add_executable(multichannel_decode  main.cpp fastcopy.cpp image.cpp image_queue.cpp)
 target_link_libraries(multichannel_decode X11 VAITutils mfx igfxcmrt64 va va-drm pthread rt dl)
 
 

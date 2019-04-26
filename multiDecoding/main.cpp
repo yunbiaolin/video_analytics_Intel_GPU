@@ -44,6 +44,7 @@
 #include <mfxstructures.h>
 #include <unistd.h>
 #include "common_utils.h"
+#include "image_queue.hpp"
 
 using namespace std;
 
@@ -80,6 +81,12 @@ static pthread_mutex_t s_decodermutex_odd;
 static pthread_mutex_t s_decodermutex_even;
 static pthread_mutex_t s_decodermutex_third;
 static pthread_mutex_t s_decodermutex_forth;
+static pthread_mutex_t s_image_queue_mutex;
+ImageQueue image_queue(CLIENT);
+void dummy_scheduler_func()
+{
+    return;
+}
 static int totalFrames = 0;
 
 int FastCopyAsync(void *device, void *queue, mfxFrameAllocator *pmfxAllocator, mfxFrameSurface1* pmfxSurface, void *pdata, unsigned int width, unsigned int height, void **sync_handle);
@@ -123,6 +130,7 @@ static bool need_vp = true;
 static int vp_ratio = 5;
 static bool jpeg_encoder = false;
 static bool write_jpeg = false;
+static bool send_jpeg = false;
 
 // Performance information
 int total_fps;
@@ -386,6 +394,14 @@ recheck2:
                                     std::fclose(m_dump_bitstream_1);
                                 }
                             }
+                            if (send_jpeg)
+                            {
+                                StreamImage image1(1, "test_image1", VP_OUTPUT_WIDTH, VP_OUTPUT_HEIGHT, 100/*quality*/);
+                                image1.set_image(mfxBS.Data, mfxBS.DataLength);
+                                pthread_mutex_lock(&s_image_queue_mutex);
+                                image_queue.push(image1);
+                                pthread_mutex_unlock(&s_image_queue_mutex);
+                            }
 
                             delete mfxBS.Data;
                         }
@@ -502,6 +518,9 @@ int main(int argc, char *argv[])
     pthread_mutex_init(&s_decodermutex_even, NULL);
     pthread_mutex_init(&s_decodermutex_third, NULL);
     pthread_mutex_init(&s_decodermutex_forth, NULL);
+    pthread_mutex_init(&s_image_queue_mutex, NULL);
+    image_queue.set_batch_size(2);
+    image_queue.reg_scheduler_fun(dummy_scheduler_func);
 
     // =================================================================
     // Intel Media SDK
