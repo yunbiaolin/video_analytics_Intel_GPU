@@ -8,13 +8,23 @@ Image::Image():ptr_base(nullptr), num_size(0) {
 Image::Image(const uint32_t width, const uint32_t height, const uint8_t quality, const ColorSpace color, const ImageFormat format):Image() {
     set_resolution(width, height);
     set_quality(quality);
-    set_color(color);   set_format(format); 
+    set_color(color);   
+    set_format(format); 
+    set_timestamp(0);
 } 
 
 Image::~Image() {
     delete_image_buffer();
     delete ptr_base;
 }
+
+uint64_t Image::timestamp(){
+    return ptr_base->num_timestamp;
+}
+
+void Image::set_timestamp(const uint64_t timestamp) { 
+    ptr_base->num_timestamp = timestamp;
+} 
 
 void Image::set_resolution(const uint32_t width, const uint32_t height) { 
     ptr_base->num_width = width;
@@ -70,7 +80,7 @@ ImageFormat Image::format() {
     return ptr_base->enum_format; 
 }
 
-const void* Image::image() {
+char* Image::image() {
     return ptr_base->ptr_image; 
 }
 
@@ -112,20 +122,60 @@ std::string Stream::desc() {
     return ptr_base->str_desc; 
 }
 
-StreamImage::StreamImage(const uint32_t id, const std::string &desc, const uint32_t width, const uint32_t height, const uint8_t quality) {
-    set_id(id); 
-    set_desc(desc);
-    set_resolution(width,height);
-    set_quality(quality); 
+StreamImage::StreamImage(StreamImage& copy) {
+    this->set_id(copy.id()); 
+    this->set_desc(copy.desc());
+    this->set_resolution(copy.width(),copy.height());
+    this->set_quality(copy.quality()); 
+    this->set_color(copy.color()); 
+    this->set_format(copy.format());
+    this->set_timestamp(copy.timestamp());
+    if (copy.image()!=nullptr) {
+        this->set_image(copy.image(), copy.size());
+    }
 }
 
-StreamImage::StreamImage(const uint32_t id, const std::string &desc, const uint32_t width, const uint32_t height, const uint8_t quality, const ColorSpace color, const ImageFormat format) {
-    set_id(id); 
-    set_desc(desc);
-    set_resolution(width,height);
-    set_quality(quality); 
-    set_color(color); set_format(format);
+/*
+StreamImage::StreamImage(const uint32_t stream_id, const std::string &stream_desc, const uint32_t image_width, const uint32_t image_height, const uint8_t image_quality) {
+    set_id(stream_id); 
+    set_desc(stream_desc);
+    set_resolution(image_width,image_height);
+    set_quality(image_quality); 
+}*/
+
+StreamImage::StreamImage(const uint32_t stream_id, const std::string &stream_desc, const uint64_t image_timestamp,const uint32_t image_width, const uint32_t image_height, const uint8_t image_quality) {
+    set_id(stream_id); 
+    set_desc(stream_desc);
+    set_resolution(image_width,image_height);
+    set_quality(image_quality); 
+    set_timestamp(image_timestamp);
 }
+
+StreamImage::StreamImage(const uint32_t stream_id, const std::string &stream_desc, const uint64_t image_timestamp, const uint32_t image_width, const uint32_t image_height, const uint8_t image_quality, const ColorSpace image_color, const ImageFormat image_format) {
+    set_id(stream_id); 
+    set_desc(stream_desc);
+    set_resolution(image_width,image_height);
+    set_quality(image_quality); 
+    set_color(image_color); set_format(image_format);
+    set_timestamp(image_timestamp);
+}
+
+StreamImage& StreamImage::operator=(StreamImage& copy){
+    if (this == &copy) return *this; 
+    this->set_id(copy.id()); 
+    this->set_desc(copy.desc());
+    this->set_resolution(copy.width(),copy.height());
+    this->set_quality(copy.quality()); 
+    this->set_color(copy.color()); 
+    this->set_format(copy.format());
+    this->set_timestamp(copy.timestamp());
+    if (copy.image()!=nullptr) {
+        auto ptr_image= this->image();
+        if (ptr_image != nullptr) delete ptr_image;
+        this->set_image(copy.image(), copy.size());
+    }
+    return *this;
+} 
 
 
 

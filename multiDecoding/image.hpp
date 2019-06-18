@@ -72,6 +72,7 @@ struct ImageBase {
     ImageFormat enum_format; ///< Image compression format, must be JPEG today
     char *ptr_image = nullptr; ///< Pointer to the image buffer
     uint8_t num_quality;
+    uint64_t num_timestamp; ///< Timestamp of the image
 };
 
 /** 
@@ -98,6 +99,11 @@ class Image {
         * @brief Deconstructor
         */
       ~Image(); 
+      /** 
+        * @brief Set image timestamp
+        * @param timestamp        Timestamp of the image
+        */
+      void set_timestamp(const uint64_t timestamp); 
       /** 
         * @brief Set image width and height attribute
         * @param width        Width of the image
@@ -158,13 +164,18 @@ class Image {
         */
       ImageFormat format();
       /** 
+        * @brief      Get image timestamp
+        * @retrun     Timestamp string
+        */
+      uint64_t timestamp();
+      /** 
         * @brief Get the image 
         * @retrun     Pointer to the image 
         */
-      const void* image();
+      char* image();
       /** 
         * @brief Get the memory size of image 
-        * @retrun     Pointer to the image 
+        * @retrun     Size of the image
         */
       size_t size();
 
@@ -235,28 +246,47 @@ class Stream: private StreamBase {
   */
 class StreamImage: public Image, public Stream {
     public:
-        StreamImage() = delete; ///< disable the default constructor (C++11 or above)
+        /** 
+          * @brief Copy constructor 
+          */
+        StreamImage(StreamImage& copy);
         /** 
           * @brief Constructor 
-          * @param id           ID of the stream
-          * @param desc         Description of the stream
-          * @param height       Height of the image
-          * @param width        Width of the image
-          * @param quality      Compression quality of the image
-          * @param color        Color space format of the image @enum ColorSpace
-          * @param format       Image compression format @enum ImageFormat
+          * @param stream_id           ID of the stream
+          * @param stream_desc         Description of the stream
+          * @param image_timestamp    Timestamp of the image
+          * @param image_height       Height of the image
+          * @param image_width        Width of the image
+          * @param image_quality      Compression quality of the image
+          * @param image_color        Color space format of the image @enum ColorSpace
+          * @param image_format       Image compression format @enum ImageFormat
           */
-        StreamImage(const uint32_t id, const std::string &desc, const uint32_t width, const uint32_t height, const uint8_t quality); 
+        //StreamImage(const uint32_t stream_id, const std::string &stream_desc, const uint32_t image_width, const uint32_t image_height, const uint8_t image_quality); 
+        /** 
+          * @brief Constructor 
+          * @param stream_id           ID of the stream
+          * @param stream_desc         Description of the stream
+          * @param image_timestamp    Timestamp of the image
+          * @param image_height       Height of the image
+          * @param image_width        Width of the image
+          * @param image_quality      Compression quality of the image
+          * @param image_color        Color space format of the image @enum ColorSpace
+          * @param image_format       Image compression format @enum ImageFormat
+          */
+        StreamImage(const uint32_t stream_id, const std::string &stream_desc, const uint64_t image_timestamp, const uint32_t image_width, const uint32_t image_height, const uint8_t image_quality); 
         /** 
           * @brief Constructor
-          * @param id           ID of the stream
-          * @param desc         Description of the stream
-          * @param height       Height of the image
-          * @param width        Width of the image
-          * @param color        Color space format of the image @enum ColorSpace
-          * @param format       Image compression format @enum ImageFormat
+          * @param stream_id           ID of the stream
+          * @param stream_desc         Description of the stream
+          * @param image_timestamp    Timestamp of the image
+          * @param image_height       Height of the image
+          * @param image_width        Width of the image
+          * @param image_color        Color space format of the image @enum ColorSpace
+          * @param image_format       Image compression format @enum ImageFormat
           */
-        StreamImage(const uint32_t id, const std::string &desc, const uint32_t width, const uint32_t height, const uint8_t quality, const ColorSpace color, const ImageFormat format); 
+        StreamImage(const uint32_t stream_id, const std::string &stream_desc, const uint64_t image_timestamp, const uint32_t image_width, const uint32_t image_height, const uint8_t image_quality, const ColorSpace image_color, const ImageFormat image_format); 
+
+        StreamImage& operator=(StreamImage& copy); 
 };
 
 typedef StreamImage* StreamImage_ptr_t;

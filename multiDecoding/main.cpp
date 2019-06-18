@@ -83,7 +83,7 @@ static pthread_mutex_t s_decodermutex_third;
 static pthread_mutex_t s_decodermutex_forth;
 static pthread_mutex_t s_image_queue_mutex;
 ImageQueue image_queue(CLIENT);
-void dummy_scheduler_func()
+void dummy_detection_func(ImageData_t & image)
 {
     return;
 }
@@ -396,7 +396,7 @@ recheck2:
                             }
                             if (send_jpeg)
                             {
-                                StreamImage image1(1, "test_image1", VP_OUTPUT_WIDTH, VP_OUTPUT_HEIGHT, 100/*quality*/);
+                                StreamImage image1(1, "test_image1", 0x12345678, VP_OUTPUT_WIDTH, VP_OUTPUT_HEIGHT, 100/*quality*/);
                                 image1.set_image(mfxBS.Data, mfxBS.DataLength);
                                 pthread_mutex_lock(&s_image_queue_mutex);
                                 image_queue.push(image1);
@@ -520,7 +520,7 @@ int main(int argc, char *argv[])
     pthread_mutex_init(&s_decodermutex_forth, NULL);
     pthread_mutex_init(&s_image_queue_mutex, NULL);
     image_queue.set_batch_size(2);
-    image_queue.reg_scheduler_fun(dummy_scheduler_func);
+    image_queue.reg_detection_fun(dummy_detection_func);
 
     // =================================================================
     // Intel Media SDK

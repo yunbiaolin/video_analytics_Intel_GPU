@@ -35,30 +35,30 @@
 #ifndef __DSS_POC_IMAGE_QUEUE_HPP__
 #define __DSS_POC_IMAGE_QUEUE_HPP__
 #include "image.hpp"
+#include <configuration.hpp>
+#include <scheduler.hpp>
 #include <vector>
+#include <utility.hpp>
+#define USE_ICE 0
+#if USE_ICE
+#include <Ice/Ice.h>
+#endif
+#include <scheduler.hpp>
 
-/** 
-  * @brief enum of color space of image 
-  * Defines the supported color formats. Currently, only NV12 and RGB formats
-  * are supported.
-  */
-enum QueueRole {
-    CLIENT = 0, ///< NV12
-    SERVER, // RGB
-};
 
+class ImageQueue;
 /** 
   * @brief ImageData type
   */
 typedef typename ::std::vector <StreamImage_ptr_t> ImageData_t;
 /** 
-  * @brief Inference function callback type
+  * @brief ImageQueue_ptr_t type
   */
-typedef void (*InferenceFun_t)(ImageData_t&);
+typedef ImageQueue* ImageQueue_ptr_t;
 /** 
-  * @brief Inference function callback type
+  * @brief Detection function callback type
   */
-typedef void (*SchedulerFun_t)();
+typedef void (*DetectionFun_t)(ImageData_t&);
 
 
 /** 
@@ -71,12 +71,17 @@ class ImageQueue {
         QueueRole enum_role; ///< Role of the queue to decide actions in add_image()
         uint16_t num_batch_size;  ///< Batch size threshold to trigger data transmission
         ImageData_t data_queue; /// The queue to store the images @class ImageData
-        InferenceFun_t ptr_inference_fun; ///< point to a inference function;
-        SchedulerFun_t ptr_scheduler_fun; ///< point to a scheduler function;
+        DetectionFun_t ptr_detection_fun; ///< pointer to a detection function;
+#if USE_ICE
+        static Ice::CommunicatorHolder* ptr_ich; /// pointer to ICE communication holder
+#endif
+        static SchedulerBase* ptr_scheduler; /// pointer to a scheduler
+        static Configuration* ptr_config; /// pointer to configuration
+        static int counter; /// counter of instance
         /** 
           * @brief Send a batch of images to another node on network
           * @remarks
-          *     Triggered inside the add_image() call when the size of the queue 
+          *     Triggered inside the push() call when the size of the queue 
           *     reaches num_batch_size if enum_role=CLIENT
           * @return bool
           *     -<em>false</em> fail
@@ -86,13 +91,14 @@ class ImageQueue {
         /** 
           * @brief Run the registered inference function 
           * @remarks  
-          *     Triggered inside the add_image() call when the size of the queue 
+          *     Triggered inside the push() call when the size of the queue 
           *     reaches num_batch_size if enum_role=SERVER
           * @return bool
           *     -<em>false</em> fail
           *     -<em>True</em> success
           */
-        bool do_inference();
+        bool do_detection();
+    public:
         /** 
           * @brief Remove n items from the frontd
           * @param n  The number of the items to remove
@@ -100,8 +106,6 @@ class ImageQueue {
           *     @retval false fail
           *     @retval true success
           */
-        //bool remove_front(size_t n);
-    public:
         bool remove_front(size_t n);
         ImageQueue() = delete; ///< disable the default constructor (C++11 or newer)
         /** 
@@ -120,6 +124,7 @@ class ImageQueue {
           *     -<em>True</em> success
           */
         bool push(StreamImage &image);
+        
         /** 
           * @brief retrive an image from the top of the queue
           * @param image       Reference of an StreamImage object @class StreamImage
@@ -139,14 +144,23 @@ class ImageQueue {
           */
         void set_batch_size(uint16_t batch_size);
         /** 
-          * @brief Register the inference callback function
-          * @param ptr_fun      A callback function pointer for inference
+          * @brief Register the detection callback function
+          * @param ptr_fun      A callback function pointer for detection
           */
-        void reg_inference_fun(InferenceFun_t ptr_fun);
+        void reg_detection_fun(DetectionFun_t ptr_fun);
         /** 
-          * @brief Register the scheduler callback function
+          * @brief Set up a schedule for all ImageQueue instance
+          * @param s  Pointer of a scheduler 
           */
-        void reg_scheduler_fun(SchedulerFun_t ptr_fun);
+        void set_scheduler(SchedulerBase* ptr_s);
+        /** 
+          * @brief Get the static configuration of image queue
+          * @return Pointer to the configuration object
+          */
+        Configuration* get_config();
+
 };
+
+
 
 #endif
