@@ -46,6 +46,8 @@
 #include "common_utils.h"
 #include "image_queue.hpp"
 
+#include "rtspWrapper.h"
+
 using namespace std;
 
 // Helper macro definitions
@@ -101,6 +103,7 @@ public:
     {
     };
     FILE *f_i;
+    RtspWrapper *wrapper;
     MFXVideoDECODE *pmfxDEC;
     MFXVideoENCODE *pmfxENC;
     mfxU16 nDecSurfNum;
@@ -133,6 +136,7 @@ static bool jpeg_encoder = false;
 static bool write_jpeg = false;
 static bool sw_decoder = false;
 static bool send_jpeg = false;
+static bool rtsp_input = false;
 
 // Performance information
 int total_fps;
@@ -158,6 +162,23 @@ void sigint_hanlder(int s)
 {
     grunning = false;
 }
+
+mfxStatus ReadRtspStreamData(mfxBitstream* pBS, RtspWrapper* wrapper)
+{
+    memmove(pBS->Data, pBS->Data + pBS->DataOffset, pBS->DataLength);
+    pBS->DataOffset = 0;
+
+    mfxU32 nBytesRead = (mfxU32) wrapper->Read(pBS->Data + pBS->DataLength,
+                                       pBS->MaxLength - pBS->DataLength);
+
+    if (0 == nBytesRead)
+        return MFX_ERR_MORE_DATA;
+
+    pBS->DataLength += nBytesRead;
+
+    return MFX_ERR_NONE;
+}
+
 
 // ================= Decoding Thread =======
 void *DecodeThreadFunc(void *arg)
@@ -222,10 +243,21 @@ void *DecodeThreadFunc(void *arg)
     
         if (MFX_ERR_MORE_DATA == sts)
         {   
-            sts = ReadBitStreamData(pDecConfig->pmfxBS, pDecConfig->f_i); // Read more data into input bit stream
-            if(sts != 0){
-              fseek(pDecConfig->f_i,0, SEEK_SET);
-              sts = ReadBitStreamData(pDecConfig->pmfxBS, pDecConfig->f_i);
+            if (rtsp_input)
+            {
+                sts = ReadRtspStreamData(pDecConfig->pmfxBS, pDecConfig->wrapper);
+                if(sts != 0){
+                    pDecConfig->wrapper->Reset();
+                    sts = ReadBitStreamData(pDecConfig->pmfxBS, pDecConfig->f_i);
+                }
+            }
+            else
+            {
+                sts = ReadBitStreamData(pDecConfig->pmfxBS, pDecConfig->f_i); // Read more data into input bit stream
+                if(sts != 0){
+                    fseek(pDecConfig->f_i,0, SEEK_SET);
+                    sts = ReadBitStreamData(pDecConfig->pmfxBS, pDecConfig->f_i);
+                }
             }
             MSDK_BREAK_ON_ERROR(sts);
         }
@@ -463,7 +495,6 @@ recheck2:
 }
 
 #define NUM_OF_CHANNELS 60 // maximum channel number it supports
-
 int main(int argc, char *argv[])
 {
     // opt
@@ -511,6 +542,12 @@ int main(int argc, char *argv[])
         exit(0);
     }
 
+    if (input_filename.rfind("rtsp://") == 0)
+    {
+        rtsp_input = true;
+        printf("Receiving RTSP streams\n");
+    }
+
     std::vector<pthread_t>    vDecThreads;
     // =================================================================
 
@@ -549,6 +586,7 @@ int main(int argc, char *argv[])
     mfxFrameAllocator mfxAllocator[NUM_OF_CHANNELS];	 
 
     FILE *f_i[NUM_OF_CHANNELS];
+    RtspWrapper *wrappers[NUM_OF_CHANNELS];
     mfxBitstream mfxBS[NUM_OF_CHANNELS];
     mfxFrameSurface1** pmfxDecSurfaces[NUM_OF_CHANNELS];
     mfxFrameSurface1** pmfxVPP_In_Surfaces[NUM_OF_CHANNELS];
@@ -567,11 +605,19 @@ int main(int argc, char *argv[])
         // =================================================================
          // Intel Media SDK
         std::cout << "\t. Open input file: " << input_filename << std::endl;
-       
-        f_i[nLoop] = fopen(input_filename.c_str(), "rb");
-        if(f_i[nLoop] ==0 ){
-           std::cout << "\t.Failed to  open input file: " << input_filename << std::endl;
-           goto exit_here;
+
+        if (rtsp_input)
+        {
+            wrappers[nLoop] = new RtspWrapper;
+            wrappers[nLoop]->Initialize(input_filename.c_str());
+        }
+        else
+        {
+            f_i[nLoop] = fopen(input_filename.c_str(), "rb");
+            if(f_i[nLoop] ==0 ){
+               std::cout << "\t.Failed to  open input file: " << input_filename << std::endl;
+               goto exit_here;
+            }
         }
 
         std::cout << std::endl << "> Declare Intel Media SDK video session and Init." << std::endl;
@@ -636,7 +682,14 @@ int main(int argc, char *argv[])
         // Read a chunk of data from stream file into bit stream buffer
         // - Parse bit stream, searching for header and fill video parameters structure
         // - Abort if bit stream header is not found in the first bit stream buffer chunk
-        sts = ReadBitStreamData(&mfxBS[nLoop], f_i[nLoop]);
+        if (rtsp_input)
+        {
+            sts = ReadRtspStreamData(&mfxBS[nLoop], wrappers[nLoop]);
+        }
+        else
+        {
+            sts = ReadBitStreamData(&mfxBS[nLoop], f_i[nLoop]);
+        }
         
         sts = pmfxDEC->DecodeHeader(&mfxBS[nLoop], &DecParams);
         MSDK_IGNORE_MFX_STS(sts, MFX_WRN_PARTIAL_ACCELERATION);
@@ -975,6 +1028,7 @@ int main(int argc, char *argv[])
         DecThreadConfig *pDecThreadConfig = new DecThreadConfig();
         memset(pDecThreadConfig, 0, sizeof(DecThreadConfig));
         pDecThreadConfig->f_i                    = f_i[nLoop];
+        pDecThreadConfig->wrapper                = wrappers[nLoop];
         pDecThreadConfig->pmfxDEC                = pmfxDEC;
         pDecThreadConfig->pmfxVPP                = pmfxVPP;
         pDecThreadConfig->pmfxENC                = pmfxENC;
@@ -1025,6 +1079,7 @@ exit_here:
     for(int nLoop=0; nLoop< channelNum; nLoop++)
     {
         fclose(f_i[nLoop]);
+        delete wrappers[nLoop];
         //fclose(f_o);
 
         MSDK_SAFE_DELETE_ARRAY(pmfxDecSurfaces[nLoop]);
