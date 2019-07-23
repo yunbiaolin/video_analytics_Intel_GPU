@@ -1,0 +1,9 @@
+#Ice.MessageSizeMax = 2097152    # Largest message size is 2MB
+Ice.Trace.Network=0          # Highest level of tracing for network
+Ice.Trace.Protocol=0          # Disable protocol tracing
+Ice.UDP.SndSize=65535
+Ice.UDP.RcvSize=65535 
+Ice.Warn.Connections=1
+Ice.IPv6=0  #Disable IPv6
+Ice.ThreadPool.Server.Size=1
+Ice.ThreadPool.Server.SizeMax=1

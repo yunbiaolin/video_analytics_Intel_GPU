@@ -39,12 +39,8 @@
 #include <scheduler.hpp>
 #include <vector>
 #include <utility.hpp>
-#define USE_ICE 0
-#if USE_ICE
 #include <Ice/Ice.h>
-#endif
 #include <scheduler.hpp>
-
 
 class ImageQueue;
 /** 
@@ -58,7 +54,7 @@ typedef ImageQueue* ImageQueue_ptr_t;
 /** 
   * @brief Detection function callback type
   */
-typedef void (*DetectionFun_t)(ImageData_t&);
+typedef void (*DetectionFun_t)(ImageData_t&, void*);
 
 
 /** 
@@ -72,12 +68,11 @@ class ImageQueue {
         uint16_t num_batch_size;  ///< Batch size threshold to trigger data transmission
         ImageData_t data_queue; /// The queue to store the images @class ImageData
         DetectionFun_t ptr_detection_fun; ///< pointer to a detection function;
-#if USE_ICE
         static Ice::CommunicatorHolder* ptr_ich; /// pointer to ICE communication holder
-#endif
         static SchedulerBase* ptr_scheduler; /// pointer to a scheduler
         static Configuration* ptr_config; /// pointer to configuration
         static int counter; /// counter of instance
+        void* object;
         /** 
           * @brief Send a batch of images to another node on network
           * @remarks
@@ -147,7 +142,7 @@ class ImageQueue {
           * @brief Register the detection callback function
           * @param ptr_fun      A callback function pointer for detection
           */
-        void reg_detection_fun(DetectionFun_t ptr_fun);
+        void reg_detection_fun(DetectionFun_t ptr_fun, void* object);
         /** 
           * @brief Set up a schedule for all ImageQueue instance
           * @param s  Pointer of a scheduler 

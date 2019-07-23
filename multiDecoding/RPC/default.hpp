@@ -3,8 +3,8 @@
 
 #include <cstdint>
 #define SYS_CONFIGFILE "example_config.json"
-#define ICESERVERCONFIGFILE "/home/lxia1/Documents/myprojects/DSSPoc/network/config.server"
-#define ICECLIENTCONFIGFILE "/home/lxia1/Documents/myprojects/DSSPoc/network/config.client"
+#define ICESERVERCONFIGFILE "/home/lxia1/Documents/myprojects/videoanalyticpoc/RPC/network/config.server"
+#define ICECLIENTCONFIGFILE "/home/lxia1/Documents/myprojects/videoanalyticpoc/RPC/network/config.client"
 
 #define UDP_PACKET_SIZE 61440
 #define FEATURE_LENGTH  512

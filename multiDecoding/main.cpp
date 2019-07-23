@@ -83,7 +83,7 @@ static pthread_mutex_t s_decodermutex_third;
 static pthread_mutex_t s_decodermutex_forth;
 static pthread_mutex_t s_image_queue_mutex;
 ImageQueue image_queue(CLIENT);
-void dummy_detection_func(ImageData_t & image)
+void dummy_detection_func(ImageData_t & image, void* object)
 {
     return;
 }
@@ -520,7 +520,7 @@ int main(int argc, char *argv[])
     pthread_mutex_init(&s_decodermutex_forth, NULL);
     pthread_mutex_init(&s_image_queue_mutex, NULL);
     image_queue.set_batch_size(2);
-    image_queue.reg_detection_fun(dummy_detection_func);
+    image_queue.reg_detection_fun(dummy_detection_func, nullptr);
 
     // =================================================================
     // Intel Media SDK

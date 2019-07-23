@@ -36,18 +36,14 @@
 #include <iostream>
 #include <mutex>
 #include <thread>
-#if USE_ICE
 #include <Ice/Ice.h>
 #include <remote_interface.hpp>
-#endif
 #include <configuration.hpp>
 #include <utility.hpp>
 #include <default.hpp>
 
 int ImageQueue::counter=0;
-#if USE_ICE
 Ice::CommunicatorHolder* ImageQueue::ptr_ich; 
-#endif
 SchedulerBase* ImageQueue::ptr_scheduler; 
 Configuration* ImageQueue::ptr_config;
 
@@ -61,9 +57,7 @@ ImageQueue::ImageQueue(QueueRole role):enum_role(role), num_batch_size(1) {
 
     switch(role){
         case CLIENT:
-#if USE_ICE        
             if (ptr_ich == nullptr) ptr_ich = new Ice::CommunicatorHolder(ICECLIENTCONFIGFILE);
-#endif
 
             break;
         case SERVER:
@@ -77,12 +71,10 @@ ImageQueue::~ImageQueue(){
     }
     counter --;
     if (counter==0) {
-#if USE_ICE        
         if (ptr_ich != nullptr) {
             delete ptr_ich;
             ptr_ich=nullptr;
         }
-#endif
         if (ptr_config != nullptr) {
             delete ptr_config;
             ptr_config=nullptr;
@@ -133,8 +125,9 @@ void ImageQueue::set_batch_size(uint16_t batch_size){
     num_batch_size = batch_size;
 }
 
-void ImageQueue::reg_detection_fun(DetectionFun_t ptr_fun) {
+void ImageQueue::reg_detection_fun(DetectionFun_t ptr_fun, void* object) {
     ptr_detection_fun = ptr_fun; 
+    this->object = object;
 }
 
 void ImageQueue::set_scheduler(SchedulerBase* ptr_s) {
@@ -161,7 +154,6 @@ bool ImageQueue::send_batch(){
 
     try {
         // connect to server
-#if USE_ICE        
         auto detector_node = ptr_scheduler->next_available();
         std::string proxy_string = "Detector -d:udp -h "+detector_node->ip()+" -p "+std::to_string(detector_node->port());
         Ice::CommunicatorHolder ich(ICECLIENTCONFIGFILE);
@@ -205,7 +197,6 @@ bool ImageQueue::send_batch(){
                 processor->detect(stream_id,timstamp, width, height, quality, color , format, total_pieces, size, total_pieces-1, ptr_bytes , nonaligned_size);
             }
         }
-#endif
     }
     catch(const std::exception& e){
             std::cerr << e.what() << std::endl;
@@ -226,7 +217,7 @@ bool ImageQueue::do_detection(){
         batch_images.push_back(ptr_image);
     }
     std::cout<<"Detection image batch"<<std::endl;
-    ptr_detection_fun(batch_images);
+    ptr_detection_fun(batch_images, this->object);
 
     return true;
 }
